@@ -17,8 +17,16 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
 # torch is left exactly as the base image ships it — reinstalling pulls CUDA 13 wheels
 # needing driver >= 580 while Runpod hosts run 570/575, and CUDA init dies with no logs.
-RUN pip install --no-cache-dir \
+# Install numpy and cython up front, then build chatterbox WITHOUT build isolation.
+# Otherwise pip spins up an isolated build env, tries to compile an old pinned numpy from
+# source, and dies on "pkgutil has no attribute ImpImporter" — Python 3.12 removed it and
+# that numpy's legacy setup.py still calls it. --no-build-isolation reuses the numpy we
+# just installed as a binary wheel instead of compiling anything.
+RUN pip install --no-cache-dir "numpy>=1.26,<3" "cython"
+
+RUN pip install --no-cache-dir --no-build-isolation \
       "chatterbox-tts" \
+    && pip install --no-cache-dir \
       "transformers>=4.50.3,<5" \
       "huggingface-hub<1.0" \
       "runpod>=1.10.1"

@@ -12,8 +12,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
 RUN pip install --no-cache-dir --ignore-installed cryptography
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-RUN pip install --no-cache-dir \
-      "acestep" \
+# ACE-Step is not published to PyPI — "pip install acestep" finds no distribution at all.
+# It installs from source. Pinned to a commit-less main because the project tags rarely.
+RUN pip install --no-cache-dir "numpy>=1.26,<3"
+RUN pip install --no-cache-dir --no-build-isolation \
+      "git+https://github.com/ace-step/ACE-Step.git" \
+    && pip install --no-cache-dir \
       "transformers>=4.50.3,<5" \
       "huggingface-hub<1.0" \
       "runpod>=1.10.1"
