@@ -213,19 +213,51 @@ def run(workflow, image_b64, params):
     deadline = time.time() + JOB_TIMEOUT
     while time.time() < deadline:
         hist = _get(f"/history/{pid}")
-        if pid in hist:
-            entry = hist[pid]
-            status = entry.get("status", {})
-            if status.get("status_str") == "error" or not status.get("completed", True):
+        entry = hist.get(pid)
+        if entry is not None:
+            status = entry.get("status") or {}
+
+            # ComfyUI creates the history entry when execution STARTS and fills in
+            # `outputs` node by node as the graph runs, so the entry existing proves
+            # nothing about being finished. `completed` must be explicitly true.
+            #
+            # The first version read `not status.get("completed", True)` -- defaulting a
+            # MISSING flag to "done". That turned an in-progress graph into a finished
+            # one: the handler read history ~6s in, when only the cheap preview nodes had
+            # produced output, found no mesh among them and declared failure on a job
+            # that was running correctly. The graph was never at fault. Defaulting an
+            # unknown state to "success" is how a race becomes a bug report.
+            if status.get("status_str") == "error":
                 msgs = status.get("messages", [])
-                raise RuntimeError(f"graph failed: {json.dumps(msgs)[:900]}")
+                raise RuntimeError(f"graph failed: {json.dumps(msgs)[:1200]}")
+            if status.get("completed") is not True:
+                time.sleep(2)
+                continue
+
             files = collect(entry.get("outputs", {}))
             meshes = [f for f in files if f["filename"].lower().endswith((".glb", ".gltf", ".obj", ".ply"))]
             if not meshes:
-                raise RuntimeError(
-                    "graph completed but produced no mesh file; output keys seen: "
-                    + json.dumps({k: list(v.keys()) for k, v in entry.get("outputs", {}).items()})[:600]
-                )
+                # Carry the whole picture, not just the symptom. "No mesh" has several
+                # very different causes -- an output node that never ran, one that ran
+                # and wrote nothing, or a silent execution error ComfyUI still reports
+                # as completed -- and they are indistinguishable from the outputs dict
+                # alone. Each round trip here costs a rebuild plus a cold start, so
+                # spend the bytes once rather than guessing twice.
+                outs = entry.get("outputs", {})
+                submitted = {}
+                for n_id, n in wf.items():
+                    submitted.setdefault(n["class_type"], []).append(n_id)
+                saves = {n_id: n["inputs"] for n_id, n in wf.items()
+                         if n["class_type"] in ("SaveGLB", "Save3DAdvanced", "MeshToFile3D")}
+                raise RuntimeError(json.dumps({
+                    "error": "graph completed but produced no mesh file",
+                    "outputs_seen": {k: {kk: len(vv) if isinstance(vv, list) else str(vv)[:60]
+                                         for kk, vv in v.items()} for k, v in outs.items()},
+                    "status": entry.get("status"),
+                    "save_nodes_submitted": saves,
+                    "node_classes_submitted": {k: v for k, v in sorted(submitted.items())},
+                    "prompt_id": pid,
+                })[:3500])
             return {"meshes": meshes, "all_files": [f["filename"] for f in files], "prompt_id": pid}
         time.sleep(2)
     raise RuntimeError(f"job {pid} exceeded {JOB_TIMEOUT}s")
