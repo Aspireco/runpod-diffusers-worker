@@ -82,6 +82,28 @@ RUN for f in tokenizer.json tokenizer_config.json vocab.json merges.txt ; do \
 RUN mkdir -p /comfyui/models/vibevoice/loras
 
 # ---------------------------------------------------------------------------------------
+# comfy-node-install did NOT install comfyui-kokoro's own requirements -- the first build
+# died on `ModuleNotFoundError: No module named 'kokoro_onnx'`. That is not a build-script
+# problem to work around: the node imports kokoro_onnx at module scope, so without these
+# the node would fail to register at RUNTIME too, and the only symptom would be a workflow
+# referencing a node class that does not exist, on a billing GPU.
+#
+# Pin torch first. onnxruntime and kokoro-onnx are innocuous, but the house rule exists
+# because a transitive dep satisfying a torch requirement with a PyPI CUDA 13 wheel needs
+# driver >= 580 while Runpod hosts run 570/575, and CUDA then dies before a single log
+# line. --only-binary because source builds are what killed the sibling ../tts worker five
+# times. onnxruntime (CPU) not onnxruntime-gpu: Kokoro is 82M params and CPU-fast, and the
+# GPU build drags in a second CUDA runtime that can collide with torch's.
+RUN python -c "import torch, torchvision, torchaudio; \
+open('/tmp/constraints.txt','w').write(''.join(f'{n}=={v}\n' for n,v in \
+[('torch',torch.__version__),('torchvision',torchvision.__version__),('torchaudio',torchaudio.__version__)]))" \
+    && cat /tmp/constraints.txt \
+    && pip install --no-cache-dir -c /tmp/constraints.txt --only-binary=:all: \
+         "kokoro-onnx" "onnxruntime" \
+    && python -c "import torch; v=torch.__version__; print('torch', v); \
+assert 'cu13' not in v, f'torch was replaced: {v}'" \
+    && python -c "import kokoro_onnx, onnxruntime; print('kokoro_onnx + onnxruntime import OK')"
+
 # Kokoro. The node fetches an ONNX graph from a GitHub release and then assembles a voice
 # pack by pulling 50-odd .pt files from hexgrad/Kokoro-82M one at a time and np.savez-ing
 # them into voices_v1.bin. Doing that on a cold GPU means ~50 sequential HTTPS round trips

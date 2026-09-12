@@ -48,8 +48,28 @@ open('/tmp/constraints.txt','w').write(''.join(f'{n}=={v}\n' for n,v in \
 # reasoning in ../tts (pin torch, which breaks CUDA; let the package choose the rest).
 RUN PIP_CONSTRAINT=/constraints.txt comfy-node-install tts_audio_suite
 
-# Assert torch survived. This runs immediately after the only step that could have replaced
-# it, so a failure here names the culprit instead of surfacing as a silent GPU crash-loop.
+# comfy-node-install does not reliably install a pack's own requirements -- the sibling
+# ../voice-comfy build proved it by dying on a missing kokoro_onnx. Install this pack's
+# requirements.txt explicitly if one shipped. --prefer-binary rather than --only-binary:
+# across 19 engines' dependencies something will lack a wheel at some version (a sibling
+# worker hit exactly that with docopt), and a hard refusal fails the build for a package
+# that would have compiled fine. Still constrained, so torch cannot be replaced.
+#
+# `|| true` on the install ONLY: with 19 engines, one optional extra failing to resolve
+# should not sink the image, and the boot check below is the real gate -- it fails the
+# build if the suite did not actually register. That is the difference between tolerating
+# a missing optional dep and shipping a broken image.
+RUN NODE_DIR="$(find /comfyui/custom_nodes -maxdepth 1 -iname '*tts*audio*suite*' -o -maxdepth 1 -iname '*TTS-Audio-Suite*' | head -1)" \
+    && echo "suite at: ${NODE_DIR:-<not found>}" \
+    && if [ -f "$NODE_DIR/requirements.txt" ]; then \
+         pip install --no-cache-dir -c /constraints.txt --prefer-binary \
+           -r "$NODE_DIR/requirements.txt" || true ; \
+       else echo "no requirements.txt shipped with the pack" ; fi
+
+# Assert torch survived. Placed after BOTH install steps above -- either could have replaced
+# it -- so a failure here names the culprit instead of surfacing as a silent GPU crash-loop.
+# This is also why the `|| true` above is survivable: a dependency that quietly swapped
+# torch on its way out still fails the build, here.
 RUN python -c "import torch; v=torch.__version__; print('torch', v); \
 assert 'cu13' not in v, f'torch was replaced by a suite dependency: {v}'"
 

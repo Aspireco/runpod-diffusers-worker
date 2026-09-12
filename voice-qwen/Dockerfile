@@ -40,6 +40,33 @@ RUN comfy-node-install qwen3-tts-comfyui
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg sox \
     && rm -rf /var/lib/apt/lists/*
 
+# comfy-node-install does NOT reliably install a node pack's own requirements -- the
+# sibling ../voice-comfy build proved it by dying on a missing kokoro_onnx. This node
+# imports librosa, soundfile, tiktoken and sentencepiece at module scope, so without them
+# it fails to register at RUNTIME and the only symptom is a workflow referencing a node
+# class that does not exist, discovered on a billing GPU.
+#
+# Pin torch first: the node declares transformers>=4.57.0 and a resolver satisfying a torch
+# requirement with a PyPI CUDA 13 wheel needs driver >= 580 while Runpod hosts run 570/575,
+# which kills CUDA before a single log line. --prefer-binary rather than --only-binary
+# because not every one of these ships a wheel at every version, and a hard refusal here
+# fails the build for a package that would have compiled fine.
+#
+# onnxruntime-openvino from the node's requirements is deliberately skipped: it is an Intel
+# CPU inference runtime, useless on an NVIDIA serverless host, and it drags in a second
+# runtime stack for nothing.
+RUN python -c "import torch, torchvision, torchaudio; \
+open('/tmp/constraints.txt','w').write(''.join(f'{n}=={v}\n' for n,v in \
+[('torch',torch.__version__),('torchvision',torchvision.__version__),('torchaudio',torchaudio.__version__)]))" \
+    && cat /tmp/constraints.txt \
+    && pip install --no-cache-dir -c /tmp/constraints.txt --prefer-binary \
+         "transformers>=4.57.0,<5" "librosa" "soundfile" "einops" "tiktoken" \
+         "sentencepiece" "accelerate" "scipy>=1.11.0" "safetensors" \
+    && python -c "import torch; v=torch.__version__; print('torch', v); \
+assert 'cu13' not in v, f'torch was replaced: {v}'" \
+    && python -c "import librosa, soundfile, tiktoken, sentencepiece, transformers; \
+print('qwen3-tts node deps OK, transformers', transformers.__version__)"
+
 # Use the node's OWN downloader rather than a hand-rolled file list. It resolves
 # ComfyUI/models/qwen-tts/<repo-basename>/ via snapshot_download, which is the exact
 # layout its loader globs for. Hand-placing files here means silently re-deriving a layout
