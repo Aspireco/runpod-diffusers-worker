@@ -32,6 +32,8 @@ jobs:
             image: runpod-relight-worker
           - context: upscale
             image: runpod-upscale-worker
+          - context: video
+            image: runpod-video-worker
     steps:
       - uses: actions/checkout@v4
 
