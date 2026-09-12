@@ -57,7 +57,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg sox \
 # `ModuleNotFoundError: No module named 'sox'`. Both are needed: pysox shells out to
 # the binary, so neither alone is sufficient.
 #
-# onnxruntime-openvino from the node's requirements is deliberately skipped: it is an Intel
+# onnxruntime: the node imports it UNCONDITIONALLY, and leaving it out cost a build --
+# both node classes failed to register with `ModuleNotFoundError: No module named
+# 'onnxruntime'`. The plain CPU wheel, NOT onnxruntime-gpu, which drags in a second CUDA
+# runtime that can collide with torch's for a component doing no heavy lifting here.
+#
+# onnxruntime-openvino from the node's requirements is still skipped: it is an Intel
 # CPU inference runtime, useless on an NVIDIA serverless host, and it drags in a second
 # runtime stack for nothing.
 RUN python -c "import torch, torchvision, torchaudio; \
@@ -66,12 +71,12 @@ open('/tmp/constraints.txt','w').write(''.join(f'{n}=={v}\n' for n,v in \
     && cat /tmp/constraints.txt \
     && pip install --no-cache-dir -c /tmp/constraints.txt --prefer-binary \
          "transformers>=4.57.0,<5" "librosa" "soundfile" "einops" "tiktoken" \
-         "sentencepiece" "accelerate" "scipy>=1.11.0" "safetensors" "sox" \
+         "sentencepiece" "accelerate" "scipy>=1.11.0" "safetensors" "sox" "onnxruntime" \
     && python -c "import torch; v=torch.__version__; print('torch', v); \
 assert 'cu13' not in v, f'torch was replaced: {v}'" \
     && python -c "import librosa, soundfile, tiktoken, sentencepiece, transformers; \
 print('qwen3-tts node deps OK, transformers', transformers.__version__)" \
-    && python -c "import sox; print('python sox OK')"
+    && python -c "import sox, onnxruntime; print('python sox + onnxruntime OK')"
 
 # Use the node's OWN downloader rather than a hand-rolled file list. It resolves
 # ComfyUI/models/qwen-tts/<repo-basename>/ via snapshot_download, which is the exact
