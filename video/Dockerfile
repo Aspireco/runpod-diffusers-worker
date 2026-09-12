@@ -39,6 +39,7 @@ RUN pip install --no-cache-dir -c /tmp/constraints.txt \
       "sentencepiece" \
       "protobuf" \
       "imageio" \
+      "cosmos_guardrail" \
       "runpod>=1.10.1"
 
 # Fail the BUILD, not a billing GPU, if torch was swapped or the pipeline class is absent.
