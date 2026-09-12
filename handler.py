@@ -82,6 +82,23 @@ except Exception:
 print(f"[boot] ready in {time.time() - _t0:.1f}s", flush=True)
 
 
+def _load_image(job_input):
+    """Source image for edit-capable models. Absent for plain text-to-image."""
+    src = job_input.get("image_url") or job_input.get("image_base64") or job_input.get("image")
+    if not src:
+        return None
+    import io
+    import urllib.request
+    from PIL import Image
+    if src.startswith("http"):
+        with urllib.request.urlopen(src, timeout=60) as r:
+            data = r.read()
+    else:
+        raw = src.split(",", 1)[1] if src.startswith("data:") else src
+        data = base64.b64decode(raw)
+    return Image.open(io.BytesIO(data)).convert("RGB")
+
+
 def handler(job):
     job_input = job.get("input") or {}
     prompt = (job_input.get("prompt") or "").strip()
@@ -100,11 +117,19 @@ def handler(job):
 
     kwargs = {
         "prompt": prompt,
-        "width": width,
-        "height": height,
         "num_inference_steps": steps,
         "guidance_scale": guidance,
     }
+
+    # Edit models (Qwen-Image-Edit, FLUX.2 klein editing) take a source image and derive
+    # their own output size from it -- passing width/height alongside makes them error.
+    source = _load_image(job_input)
+    if source is not None:
+        kwargs["image"] = source
+        width, height = source.size
+    else:
+        kwargs["width"] = width
+        kwargs["height"] = height
     negative = (job_input.get("negative_prompt") or "").strip()
     if negative:
         kwargs["negative_prompt"] = negative

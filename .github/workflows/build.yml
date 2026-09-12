@@ -24,6 +24,10 @@ jobs:
             image: runpod-tts-worker
           - context: stt
             image: runpod-stt-worker
+          - context: utility
+            image: runpod-utility-worker
+          - context: music
+            image: runpod-music-worker
     steps:
       - uses: actions/checkout@v4
 
