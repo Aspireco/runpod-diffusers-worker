@@ -26,10 +26,13 @@ open('/tmp/constraints.txt','w').write(''.join(f'{n}=={v}\n' for n,v in \
 [('torch',torch.__version__),('torchvision',torchvision.__version__),('torchaudio',torchaudio.__version__)]))" \
     && cat /tmp/constraints.txt
 
-# Cosmos3 declares _diffusers_version 0.37.1 and needs the Cosmos3OmniDiffusersPipeline
-# class, which older diffusers does not ship — hence the floor rather than the house >=0.31.
+# Cosmos3-Nano's model_index.json says _diffusers_version 0.37.1, but that is the version
+# that SAVED the repo, not one that can load it. The class it actually needs,
+# Cosmos3OmniPipeline, first shipped in diffusers v0.39.0 -- so the floor is 0.39, not 0.37.
+# (The repo names its class "Cosmos3OmniDiffusersPipeline", which no diffusers release has
+# ever exported; handler.py maps that wrong name onto the real one.)
 RUN pip install --no-cache-dir -c /tmp/constraints.txt \
-      "diffusers>=0.37.1" \
+      "diffusers>=0.39.0" \
       "transformers>=4.50.3,<5" \
       "huggingface-hub<1.0" \
       "accelerate" \
@@ -40,8 +43,7 @@ RUN pip install --no-cache-dir -c /tmp/constraints.txt \
 
 # Fail the BUILD, not a billing GPU, if torch was swapped or the pipeline class is absent.
 RUN python -c "import torch; v=torch.__version__; print('torch', v); assert 'cu13' not in v, f'torch replaced: {v}'"
-RUN python -c "import diffusers; print('diffusers', diffusers.__version__); \
-assert hasattr(diffusers, 'DiffusionPipeline')"
+RUN python -c "import diffusers; print('diffusers', diffusers.__version__); assert hasattr(diffusers, 'Cosmos3OmniPipeline'), 'diffusers %s lacks Cosmos3OmniPipeline (needs >=0.39.0)' % diffusers.__version__"
 
 COPY handler.py /handler.py
 RUN python -c "import ast; ast.parse(open('/handler.py').read()); print('handler parses OK')"

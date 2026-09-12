@@ -49,9 +49,41 @@ _t0 = time.time()
 _snapshot = find_snapshot(MODEL_ID)
 print(f"[boot] {MODEL_ID} -> {_snapshot}", flush=True)
 
+import diffusers  # noqa: E402
 from diffusers import DiffusionPipeline  # noqa: E402
 
-PIPE = DiffusionPipeline.from_pretrained(
+# DO NOT replace this with a bare DiffusionPipeline.from_pretrained call.
+# That helper reads "_class_name" out of the repo's model_index.json and getattr()s it off
+# the diffusers module. Cosmos3-Nano declares "Cosmos3OmniDiffusersPipeline", and NO diffusers
+# version has ever exported a class by that name -- the real one is "Cosmos3OmniPipeline",
+# added in v0.39.0. So the generic loader dies with
+#   AttributeError: module diffusers has no attribute Cosmos3OmniDiffusersPipeline
+# on a correctly downloaded, perfectly good checkpoint. The repo's metadata is simply wrong.
+#
+# Resolving the class ourselves also keeps MODEL_ID swappable: anything whose declared class
+# does exist still loads through the generic path below.
+_declared = "?"
+try:
+    import json as _json
+    with open(os.path.join(_snapshot, "model_index.json")) as _f:
+        _declared = _json.load(_f).get("_class_name", "?")
+except Exception:
+    pass
+
+# Known-wrong names in published metadata -> the class diffusers actually ships.
+_CLASS_FIXUPS = {"Cosmos3OmniDiffusersPipeline": "Cosmos3OmniPipeline"}
+_wanted = _CLASS_FIXUPS.get(_declared, _declared)
+
+_cls = getattr(diffusers, _wanted, None)
+if _cls is None:
+    _cls = DiffusionPipeline  # generic path; will raise with a clear message if it cannot cope
+    print(f"[boot] no class {_wanted!r} in diffusers {diffusers.__version__}, "
+          f"falling back to DiffusionPipeline", flush=True)
+else:
+    print(f"[boot] model declares {_declared!r} -> loading {_wanted!r} "
+          f"(diffusers {diffusers.__version__})", flush=True)
+
+PIPE = _cls.from_pretrained(
     _snapshot,
     torch_dtype=torch.bfloat16,
     local_files_only=True,
