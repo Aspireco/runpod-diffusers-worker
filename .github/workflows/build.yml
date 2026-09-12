@@ -36,6 +36,8 @@ jobs:
             image: runpod-video-worker
           - context: vid-wan-a14b
             image: runpod-wan-a14b-worker
+          - context: vid-hunyuan-i2v
+            image: runpod-hunyuan-i2v-worker
           - context: comfy
             image: runpod-comfy-worker
           # 3D lane. TRELLIS.2 + MoGe-2 + BiRefNet, ~9.6GB of weights on top of the

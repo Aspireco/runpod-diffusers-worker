@@ -1,0 +1,4 @@
+# runtime artefacts, not source
+.loader_pod
+autokill.log
+results/
