@@ -17,25 +17,37 @@ this script raises and the *build* fails with a readable traceback -- instead of
 graph failing on a GPU that bills by the second and whose only symptom would be a
 worker returning `{}`.
 
-THE FOUR THINGS THAT MAKE THIS NON-TRIVIAL
-------------------------------------------
-1. `control_after_generate`. A seed widget occupies TWO slots in widgets_values --
-   the seed, then the control mode ("fixed"/"randomize"). KSampler serialises as
-   [56,"fixed",12,7.5,"euler","normal",1] but has six API inputs. Consume the extra
-   slot or every value after the seed lands on the wrong input, silently, and the
-   graph still runs -- producing garbage at full GPU cost.
+WHAT MAKES THE POSITIONAL MAPPING HARD
+--------------------------------------
+Almost all of the difficulty is one question: which schema inputs occupy a slot in
+`widgets_values`, and in what order. Getting it wrong does not raise -- it assigns
+values to the wrong keys and the graph runs anyway, producing garbage at full GPU
+cost. Every rule below was learned from a node in this template that broke a simpler
+one, which is why to_api() also ASSERTS that the slots and the values balance.
 
-2. Output nodes used as sources. The TRELLIS.2 template wires
-   `ApplyTextureToMesh.base_color` from a PreviewImage node. PreviewImage has no
-   output slots in any ComfyUI version -- the editor allows it as a visual tap.
-   Resolved by walking through to whatever feeds the PreviewImage.
+1. Companion widgets. Some inputs serialise TWO values. A seed emits its value then
+   its control mode ("fixed"), and LoadImage's upload button emits the filename then
+   its type ("image") -- one input, two slots, in both cases. See
+   COMPANION_WIDGET_OPTS.
 
-3. Muted (mode 2) and bypassed (mode 4) nodes. Bypass means "pass input through";
-   mute means "do not execute". Both are rewritten, not ignored.
+2. A converted widget keeps its slot. UnwrapMesh's `resolution` is an INT wired from
+   a PrimitiveInt: it is a socket AND it still holds its position in widgets_values.
+   Skip it and `padding` gets 2048.
 
-4. Dead branches. The template renders five preview images we never look at. They
-   are pruned to the ancestors of the requested output nodes, which is the
-   difference between paying for one texture bake and paying for six.
+3. A socket-looking type can be a widget. Save3DAdvanced's `viewport_state` is a
+   LOAD_3D -- not a widget type, not listed among the node's sockets, and it holds a
+   slot. Skip it and `width` receives the empty string.
+
+4. Declaration order, not bucketed order. V3 nodes declare one ordered input list;
+   the V1 INPUT_TYPES view splits it into required/optional and loses the
+   interleaving. define_schema() is asked first.
+
+Two structural fixups on top of that: output nodes used as sources (the template taps
+`ApplyTextureToMesh.base_color` off a PreviewImage, which has no output slot in any
+ComfyUI version) are resolved through to the real source, and muted/bypassed nodes are
+reached through rather than emitted. Finally the graph is pruned to the ancestors of
+the requested outputs -- dropping five unused preview renders and a UV-atlas render,
+the difference between paying for one texture bake and six.
 """
 
 import json
@@ -46,6 +58,13 @@ import sys
 sys.path.insert(0, "/comfyui")
 
 WIDGET_TYPES = {"INT", "FLOAT", "STRING", "BOOLEAN", "COMBO"}
+
+# Input options whose presence means the editor renders a SECOND widget for the same
+# input, and therefore serialises an extra positional value that the schema does not
+# mention. Discovered the hard way, one build at a time; the leftover-value assertion
+# in to_api() is what surfaces a new one rather than letting it corrupt the mapping.
+COMPANION_WIDGET_OPTS = ("control_after_generate", "image_upload", "video_upload",
+                         "audio_upload", "animated_image_upload", "model_upload")
 
 
 def load_node_defs():
@@ -274,11 +293,18 @@ class Graph:
                     if wi < len(wv):
                         value, got = wv[wi], True
                         wi += 1
-                        # The seed's companion "fixed"/"randomize" slot. Skipping this
-                        # is the most damaging bug possible here: every later widget
-                        # shifts by one and the graph still runs, producing wrong output
-                        # at full GPU cost with no error.
-                        if opts.get("control_after_generate") and wi < len(wv) and isinstance(wv[wi], str):
+                        # Some inputs carry a COMPANION widget that the editor
+                        # serialises as an extra positional value the schema never
+                        # mentions:
+                        #   control_after_generate  a seed's "fixed"/"randomize" mode
+                        #   image_upload            LoadImage's upload button, which
+                        #                           emits its type ("image") after the
+                        #                           filename -- two values for one input
+                        # Miss one and every later widget shifts by one, and the graph
+                        # still runs, producing wrong output at full GPU cost with no
+                        # error. The guard below is only a cross-check; this is the fix.
+                        if (any(opts.get(k) for k in COMPANION_WIDGET_OPTS)
+                                and wi < len(wv) and isinstance(wv[wi], str)):
                             wi += 1
                     else:
                         starved.append(name)
