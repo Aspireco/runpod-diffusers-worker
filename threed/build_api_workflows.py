@@ -385,11 +385,22 @@ class Graph:
                                     sid = getattr(sub, "id", None) or getattr(sub, "name", None)
                                     if sid is None:
                                         continue
+                                    # DOT-PREFIXED with the combo's own id. ComfyUI
+                                    # expands a DynamicCombo via
+                                    #   parse_class_inputs(..., selected_option["inputs"], curr_prefix)
+                                    # and finalize_prefix() joins the prefix list with
+                                    # ".", so the live input keys are "sign_mode.qef",
+                                    # not "qef". Emitting them bare leaves the real keys
+                                    # absent, and RemeshMesh then fails validation with
+                                    # required_input_missing -- which drops it AND every
+                                    # output node downstream of it, while the prompt is
+                                    # still accepted and still reports success.
+                                    key = f"{name}.{sid}"
                                     if wi < len(wv):
-                                        inputs[sid] = wv[wi]
+                                        inputs[key] = wv[wi]
                                         wi += 1
                                     else:
-                                        starved.append(sid)
+                                        starved.append(key)
                     else:
                         starved.append(name)
 
