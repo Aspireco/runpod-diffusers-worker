@@ -62,6 +62,29 @@ def load_node_defs():
     here is safe.
     """
     sys.argv = [sys.argv[0], "--cpu"]
+
+    # Setting argv is NOT sufficient on its own, and this is the non-obvious part.
+    # comfy/cli_args.py ends with:
+    #     if comfy.options.args_parsing: args = parser.parse_args()
+    #     else:                          args = parser.parse_args([])
+    # and comfy/options.py defaults args_parsing to False. Only main.py flips it, on
+    # its first two lines. Import `nodes` directly without flipping it and ComfyUI
+    # parses an EMPTY argument list -- so args.cpu is False no matter what argv says,
+    # cpu_state stays GPU, and model_management calls torch.cuda.current_device() at
+    # module import. That is the "Found no NVIDIA driver" this build hit twice.
+    import comfy.options
+
+    comfy.options.enable_args_parsing()
+
+    from comfy.cli_args import args as comfy_args
+
+    if not comfy_args.cpu:
+        raise SystemExit(
+            "ComfyUI did not accept --cpu (args.cpu is False). Node registration would "
+            "initialise CUDA and fail on a GPU-less builder. Check whether "
+            "comfy.options.enable_args_parsing() still gates cli_args parsing."
+        )
+
     import nodes
 
     init = getattr(nodes, "init_extra_nodes", None)
@@ -206,6 +229,7 @@ class Graph:
             wv = list(node.get("widgets_values") or [])
             wi = 0
             inputs = {}
+            starved = []
 
             for name, typ, opts in input_spec(cls):
                 if name in linked:
@@ -220,7 +244,12 @@ class Graph:
                 if name in sockets:
                     continue  # a socket the template left unconnected
                 if wi >= len(wv):
-                    continue  # optional widget the template left at its default
+                    # The editor serialises EVERY widget, defaults included, so running
+                    # out of values means the schema has an input the editor did not
+                    # treat as a widget and did not list as a socket either -- which
+                    # means something earlier consumed the wrong slot.
+                    starved.append(name)
+                    continue
                 inputs[name] = wv[wi]
                 wi += 1
                 # The seed's companion "fixed"/"randomize" slot. Skipping this is the
@@ -237,6 +266,17 @@ class Graph:
                     f"{ntype}#{nid}: consumed {wi} of {len(wv)} widget values "
                     f"({wv!r}) -- schema and template disagree, so later inputs would "
                     f"be misaligned. Mapped: {json.dumps(inputs)[:300]}"
+                )
+            # The mirror-image failure: values ran out while schema inputs remained.
+            # Those inputs fall back to node defaults, which may be harmless -- but it
+            # also means an earlier non-socket, non-widget input ate a slot meant for
+            # something else, and every value after it is on the wrong key. Counting
+            # alone cannot tell the two apart, so refuse to guess.
+            if starved and wv:
+                raise SystemExit(
+                    f"{ntype}#{nid}: widget values ran out before inputs {starved} "
+                    f"(had {wv!r}). An input is neither a listed socket nor a widget, "
+                    "so the positional mapping cannot be trusted."
                 )
 
             api[str(nid)] = {"class_type": ntype, "inputs": inputs, "_meta": {"title": node.get("title", ntype)}}
