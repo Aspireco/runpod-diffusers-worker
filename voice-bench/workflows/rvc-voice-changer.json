@@ -1,17 +1,24 @@
 {
   "_comment": "VOICE CONVERSION, not synthesis. Feed in a real recorded performance and come out the other side in a different voice, keeping the original timing, breaths, emphasis and mistakes. For a presenter ad this usually beats TTS outright: you are converting an actual human performance rather than asking a model to invent one, so everything that makes a read sound human is preserved by construction.",
+  "_save_node": "SaveAudioMP3 is marked DEPRECATED in current ComfyUI in favour of SaveAudioAdvanced, but it is the right choice on a pinned base: worker-comfyui 5.10.0 fixes a ComfyUI version, and the older node is certainly present there while SaveAudioAdvanced may not be. Revisit on the next base-image bump - if a graph ever 400s on this node, swap to SaveAudio (FLAC, never deprecated) rather than guessing at the newer name. quality options are exactly: V0, 128k, 320k.",
   "_why_here": "RVC has NO standalone ComfyUI node. The registry's `ComfyUI-RVC` entry is an unclaimed stub with zero published versions, so `comfy-node-install ComfyUI-RVC` resolves and installs nothing - a silent no-op rather than an error. tts_audio_suite is the only maintained route, which is why this workflow lives in the bench image rather than a production one.",
   "_licence": "RVC itself is MIT (RVC-Project/Retrieval-based-Voice-Conversion-WebUI, still the canonical repo). The risk here is NOT the licence - it is voice-likeness rights in the target model. A community .pth trained on a celebrity or a YouTuber is a legal problem regardless of how permissive the code is. Use only models trained on voices we have written consent for. Applio is the best-maintained fork but has announced wind-down.",
   "_models": "RVC target models are 100-300MB .pth files plus an optional .index for retrieval. Language-agnostic - it converts timbre, not text - so one model serves both the EN and FR reads, which is exactly what a bilingual campaign wants and what no TTS lane gives you for free.",
   "_schema_drift": "Input names read from tts_audio_suite v5.8.10 and will drift. If validation 400s, GET /object_info on a running instance and re-read rather than guessing.",
   "1": {
     "class_type": "LoadAudio",
-    "_meta": { "title": "Recorded performance" },
-    "inputs": { "audio": "performance.wav" }
+    "_meta": {
+      "title": "Recorded performance"
+    },
+    "inputs": {
+      "audio": "performance.wav"
+    }
   },
   "2": {
     "class_type": "RVCEngineNode",
-    "_meta": { "title": "RVC engine" },
+    "_meta": {
+      "title": "RVC engine"
+    },
     "inputs": {
       "model": "none",
       "device": "auto",
@@ -22,18 +29,31 @@
   },
   "3": {
     "class_type": "UnifiedVoiceChangerNode",
-    "_meta": { "title": "Voice Changer" },
+    "_meta": {
+      "title": "Voice Changer"
+    },
     "inputs": {
-      "VC_engine": ["2", 0],
-      "source_audio": ["1", 0],
+      "VC_engine": [
+        "2",
+        0
+      ],
+      "source_audio": [
+        "1",
+        0
+      ],
       "seed": 42
     }
   },
   "4": {
     "class_type": "SaveAudioMP3",
-    "_meta": { "title": "Save MP3" },
+    "_meta": {
+      "title": "Save MP3"
+    },
     "inputs": {
-      "audio": ["3", 0],
+      "audio": [
+        "3",
+        0
+      ],
       "filename_prefix": "bench/rvc",
       "quality": "320k"
     }

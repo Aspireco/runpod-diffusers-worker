@@ -1,11 +1,14 @@
 {
   "_comment": "FRENCH ad read on a preset timbre, with natural-language delivery direction. This is the workflow the brief means by 'test this hardest, including French' - Qwen3-TTS publishes a French WER of 2.858, the best of any open model surveyed, and this graph is how that gets verified against our own copy rather than against a paper.",
+  "_save_node": "SaveAudioMP3 is marked DEPRECATED in current ComfyUI in favour of SaveAudioAdvanced, but it is the right choice on a pinned base: worker-comfyui 5.10.0 fixes a ComfyUI version, and the older node is certainly present there while SaveAudioAdvanced may not be. Revisit on the next base-image bump - if a graph ever 400s on this node, swap to SaveAudio (FLAC, never deprecated) rather than guessing at the newer name. quality options are exactly: V0, 128k, 320k.",
   "_instruct": "The `instruct` field is the differentiator versus every other model in this stack: delivery is directed in plain language rather than through an exaggeration slider. Write it as you would brief a voice actor - 'warm, unhurried, like explaining to a neighbour' - and it applies tone, pace and emotion. Leave it empty for a neutral read.",
   "_speakers": "Nine presets: Aiden, Dylan, Eric, Ono_anna, Ryan, Serena, Sohee, Uncle_fu, Vivian. Each has a native language and can speak any of the ten supported; quality is best in its native one. None is natively French, so for francophone-facing work A/B this against qwen-clone.json with a real French reference - a cloned native speaker will usually beat a preset speaking out of its native language.",
   "_language": "Set `language` explicitly rather than leaving it on Auto whenever the target language is known. Auto adapts from the text, and a French script with an English brand name in it can tip the detector.",
   "1": {
     "class_type": "FB_Qwen3TTSCustomVoice",
-    "_meta": { "title": "Qwen3-TTS Custom Voice (FR)" },
+    "_meta": {
+      "title": "Qwen3-TTS Custom Voice (FR)"
+    },
     "inputs": {
       "text": "Nos equipes posent votre plancher en deux jours, pas en deux semaines. Chene blanc d'ingenierie, fini huile mat, en stock a notre entrepot de Mississauga.",
       "speaker": "Serena",
@@ -26,9 +29,14 @@
   },
   "2": {
     "class_type": "SaveAudioMP3",
-    "_meta": { "title": "Save MP3" },
+    "_meta": {
+      "title": "Save MP3"
+    },
     "inputs": {
-      "audio": ["1", 0],
+      "audio": [
+        "1",
+        0
+      ],
       "filename_prefix": "voice/qwen_fr",
       "quality": "320k"
     }

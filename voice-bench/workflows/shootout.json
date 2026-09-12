@@ -1,12 +1,15 @@
 {
   "_comment": "THE SHOOTOUT GRAPH. tts_audio_suite splits every engine into a config node returning a TTS_ENGINE, which plugs into one UnifiedTTSTextNode. So swapping models means replacing node 1 and touching nothing else - the text, the chunking, the seed and the encoder all stay identical. That is the whole reason this rig exists: a benchmark where each lane has its own bespoke graph measures the graphs, not the models.",
+  "_save_node": "SaveAudioMP3 is marked DEPRECATED in current ComfyUI in favour of SaveAudioAdvanced, but it is the right choice on a pinned base: worker-comfyui 5.10.0 fixes a ComfyUI version, and the older node is certainly present there while SaveAudioAdvanced may not be. Revisit on the next base-image bump - if a graph ever 400s on this node, swap to SaveAudio (FLAC, never deprecated) rather than guessing at the newer name. quality options are exactly: V0, 128k, 320k.",
   "_how_to_swap": "Change node 1's class_type to another engine and adjust its inputs. Verified class names: Qwen3TTSEngineNode, VibeVoiceEngineNode, ChatterBoxEngineNode, ChatterBoxOfficial23LangEngineNode, CosyVoiceEngineNode, IndexTTSEngineNode, HiggsAudioEngineNode, HiggsAudioV3EngineNode, F5TTSEngineNode, EchoTTSEngineNode, DotsTTSEngineNode, MossTTSEngineNode, StepAudioEditXEngineNode, FishAudioS2EngineNode, OmniVoiceEngineNode, DramaBoxEngineNode, RVCEngineNode.",
   "_licence_gate": "DO NOT ship client audio from F5TTSEngineNode (weights cc-by-nc-4.0), HiggsAudioV3EngineNode (research/non-commercial), FishAudioS2EngineNode (research-only) or IndexTTSEngineNode (bespoke bilibili licence). They are in the dropdown because knowing what we give up is the point of benchmarking - not because they are usable. The licence column in stack-docs/VOICE-BENCHMARK.md is the control.",
   "_running_it": "Do not hand-edit the text. `bash bench.sh <endpoint-id> workflows/shootout.json <label>` splices the canonical script in and records timing to bench-results.tsv. `BENCH_LANG=FR bash bench.sh ...` runs the French pass.",
   "_schema_drift": "Input names below were read from the suite at v5.8.10 and WILL drift - it ships new engines monthly. If the graph 400s on validation, GET /object_info from a running instance and re-read the schema rather than guessing. Every engine node returns TTS_ENGINE, so the wiring in node 2 is the stable part.",
   "1": {
     "class_type": "Qwen3TTSEngineNode",
-    "_meta": { "title": "Engine (swap me)" },
+    "_meta": {
+      "title": "Engine (swap me)"
+    },
     "inputs": {
       "model_variant": "1.7B-CustomVoice",
       "device": "auto",
@@ -22,9 +25,14 @@
   },
   "2": {
     "class_type": "UnifiedTTSTextNode",
-    "_meta": { "title": "TTS Text" },
+    "_meta": {
+      "title": "TTS Text"
+    },
     "inputs": {
-      "TTS_engine": ["1", 0],
+      "TTS_engine": [
+        "1",
+        0
+      ],
       "text": "REPLACED BY bench.sh - do not edit",
       "narrator_voice": "none",
       "seed": 42,
@@ -37,9 +45,14 @@
   },
   "3": {
     "class_type": "SaveAudioMP3",
-    "_meta": { "title": "Save MP3" },
+    "_meta": {
+      "title": "Save MP3"
+    },
     "inputs": {
-      "audio": ["2", 0],
+      "audio": [
+        "2",
+        0
+      ],
       "filename_prefix": "bench/shootout",
       "quality": "320k"
     }

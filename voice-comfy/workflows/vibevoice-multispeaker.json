@@ -1,10 +1,13 @@
 {
   "_comment": "ACCEPTANCE WORKFLOW: 30-minute multi-speaker file in one pass. POST as {\"input\":{\"workflow\": <this object minus _comment keys>}}. Speaker turns are tagged [1]..[4] in the text; VibeVoice models turn-taking only and CANNOT overlap speech, so two people talking at once must be two runs mixed downstream. Replace the text with the real script; the sample below is short on purpose so a smoke test costs seconds, not an hour.",
+  "_save_node": "SaveAudioMP3 is marked DEPRECATED in current ComfyUI in favour of SaveAudioAdvanced, but it is the right choice on a pinned base: worker-comfyui 5.10.0 fixes a ComfyUI version, and the older node is certainly present there while SaveAudioAdvanced may not be. Revisit on the next base-image bump - if a graph ever 400s on this node, swap to SaveAudio (FLAC, never deprecated) rather than guessing at the newer name. quality options are exactly: V0, 128k, 320k.",
   "_openers_warning": "Do NOT begin a script with 'Welcome to', 'Hello' or 'However'. VibeVoice was trained on un-denoised podcast audio and those broadcast-opener phrasings make it hallucinate background music. So does any reference audio with music under it. There is no parameter that disables this - it is input-side only. See DECISIONS.md Part 1.",
   "_output_format": "MP3 at 320k rather than FLAC: a 30-minute FLAC is ~150MB and base64 inflates it ~33%, which exceeds Runpod's sync response limit. For archival masters set BUCKET_ENDPOINT_URL on the endpoint and switch node 2 to SaveAudio (FLAC), which then returns an S3 URL instead of inline bytes.",
   "1": {
     "class_type": "VibeVoiceMultipleSpeakersNode",
-    "_meta": { "title": "VibeVoice Multiple Speakers" },
+    "_meta": {
+      "title": "VibeVoice Multiple Speakers"
+    },
     "inputs": {
       "text": "[1]: The quote came in Tuesday and the crew was on site Thursday morning.\n[2]: Two days. That is faster than the last three contractors put together.\n[1]: That is the whole point. We keep our own crews, so we are not waiting on anyone else's schedule.\n[2]: And the floor itself?\n[1]: Engineered white oak, seven and a half inch plank. It came out of the warehouse in Mississauga the same week.",
       "model": "VibeVoice-1.5B",
@@ -20,9 +23,14 @@
   },
   "2": {
     "class_type": "SaveAudioMP3",
-    "_meta": { "title": "Save MP3" },
+    "_meta": {
+      "title": "Save MP3"
+    },
     "inputs": {
-      "audio": ["1", 0],
+      "audio": [
+        "1",
+        0
+      ],
       "filename_prefix": "voice/vibevoice_multi",
       "quality": "320k"
     }
