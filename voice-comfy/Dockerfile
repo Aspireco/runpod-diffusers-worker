@@ -55,13 +55,31 @@ RUN apt-get update && apt-get install -y --no-install-recommends espeak-ng ffmpe
 # VRAM instead of ~24, and it is 5.4GB in the image instead of 18.7. The acceptance target
 # is a 30-minute multi-speaker file in one pass, which sits comfortably inside the 1.5B and
 # would run the 7B near its ceiling. 7B stays a runtime opt-in -- see VIBEVOICE_EXTRA.
+# HuggingFace 429s these downloads from GitHub's runner IPs, and `comfy model download`
+# gives up after three attempts about two seconds apart -- which is no retry at all for a
+# rate limiter that thinks in minutes. It killed a build here, and 0.3 records the same
+# limiter stopping the LTX-2.5 pull. Several lanes in this repo also build concurrently and
+# share those IPs, so the limit is hit far more often than a single image would suggest.
+#
+# So: retry with real backoff -- 30s, 60s, 120s, 240s, 480s. Sixteen minutes of patience
+# beats a failed build and a manual re-run, and costs nothing when the first attempt works.
+# Each file is verified non-trivial before being accepted, because a 429 body is a few
+# hundred bytes that would otherwise sit on disk wearing a .safetensors name and only fail
+# much later, at load time, on a billing GPU.
 ARG VV=https://huggingface.co/microsoft/VibeVoice-1.5B/resolve/main
 RUN for f in config.json model.safetensors.index.json preprocessor_config.json \
              model-00001-of-00003.safetensors \
              model-00002-of-00003.safetensors \
              model-00003-of-00003.safetensors ; do \
-      comfy model download --url "$VV/$f" \
-        --relative-path models/vibevoice/VibeVoice-1.5B --filename "$f" || exit 1 ; \
+      ok=0 ; \
+      for delay in 0 30 60 120 240 480 ; do \
+        [ $delay -gt 0 ] && { echo "retrying $f in ${delay}s" ; sleep $delay ; } ; \
+        if comfy model download --url "$VV/$f" \
+             --relative-path models/vibevoice/VibeVoice-1.5B --filename "$f" ; then \
+          ok=1 ; break ; \
+        fi ; \
+      done ; \
+      [ $ok -eq 1 ] || { echo "FAILED after backoff: $f" ; exit 1 ; } ; \
     done
 
 # THE TRAP. microsoft/VibeVoice-1.5B ships NO tokenizer -- look at its file list, there is
@@ -70,8 +88,15 @@ RUN for f in config.json model.safetensors.index.json preprocessor_config.json \
 # first token with a message about a missing processor. 11MB, Apache-2.0, ungated.
 ARG QW=https://huggingface.co/Qwen/Qwen2.5-1.5B/resolve/main
 RUN for f in tokenizer.json tokenizer_config.json vocab.json merges.txt ; do \
-      comfy model download --url "$QW/$f" \
-        --relative-path models/vibevoice/tokenizer --filename "$f" || exit 1 ; \
+      ok=0 ; \
+      for delay in 0 30 60 120 240 ; do \
+        [ $delay -gt 0 ] && { echo "retrying $f in ${delay}s" ; sleep $delay ; } ; \
+        if comfy model download --url "$QW/$f" \
+             --relative-path models/vibevoice/tokenizer --filename "$f" ; then \
+          ok=1 ; break ; \
+        fi ; \
+      done ; \
+      [ $ok -eq 1 ] || { echo "FAILED after backoff: $f" ; exit 1 ; } ; \
     done
 
 # LoRA drop-point. The node reads adapters from models/vibevoice/loras/ and refuses to mix

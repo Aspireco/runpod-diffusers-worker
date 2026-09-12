@@ -83,9 +83,22 @@ print('qwen3-tts node deps OK, transformers', transformers.__version__)" \
 # HF_HUB_ENABLE_HF_TRANSFER is deliberately NOT set: it needs a rust extension that is not
 # in this base image, and when it is missing huggingface_hub raises rather than falling
 # back -- a build failure that reads as a network problem.
+# Retried with backoff for the same reason as ../voice-comfy: HuggingFace 429s these
+# pulls from GitHub runner IPs, several lanes in this repo build concurrently and share
+# them, and snapshot_download surfaces the 429 as a hard failure. It succeeded on an
+# earlier build and failed the neighbouring lane in the same minute, which is exactly
+# the signature of a shared limiter rather than a broken URL. snapshot_download resumes
+# rather than restarting, so a retry picks up where the last attempt stopped.
 RUN NODE_DIR="$(find /comfyui/custom_nodes -maxdepth 1 -iname '*qwen*tts*' | head -1)" \
     && test -n "$NODE_DIR" || (echo "qwen3-tts node not installed" && exit 1) \
-    && python "$NODE_DIR/download_models.py" --target /comfyui/models/qwen-tts
+    && ok=0 \
+    && for delay in 0 30 60 120 240 480 ; do \
+         [ $delay -gt 0 ] && { echo "retrying model download in ${delay}s" ; sleep $delay ; } ; \
+         if python "$NODE_DIR/download_models.py" --target /comfyui/models/qwen-tts ; then \
+           ok=1 ; break ; \
+         fi ; \
+       done \
+    && { [ $ok -eq 1 ] || { echo "FAILED after backoff" ; exit 1 ; } ; }
 
 # The downloader pulls the 0.6B pair only with a flag, and VoiceDesign is in its defaults.
 # Drop VoiceDesign to keep the image near 10GB rather than 15GB. If the default set ever
