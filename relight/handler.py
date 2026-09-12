@@ -379,6 +379,10 @@ def _encode_cond(fg, bg):
     return torch.cat([c[None, ...] for c in latents], dim=1)
 
 
+# The diffusers pipelines guard their own denoise loops, but the VAE encode/decode and
+# CLIP calls below are ours and would otherwise build an autograd graph nobody reads --
+# pure waste, and enough extra VRAM to OOM a highres pass on a 16GB card.
+@torch.inference_mode()
 def handler(job):
     job_input = job.get("input") or {}
     started = time.time()
@@ -401,13 +405,15 @@ def handler(job):
         if not prompt and background is None:
             return {"error": "prompt is required when no background is supplied"}
 
+        # A background means we can relight INTO the scene (fbc). Without one there is
+        # nothing to condition on, so fall back to relighting from the prompt alone (fc).
         mode = (job_input.get("mode") or ("fbc" if background is not None else "fc")).lower()
+        if mode not in ("fbc", "fc"):
+            return {"error": f"unknown mode '{mode}' (expected 'fbc' or 'fc')"}
         if mode == "fbc" and background is None:
             return {"error": "mode 'fbc' needs background_url or background_base64"}
         if mode == "fc" and not ENABLE_FC:
             return {"error": "text-conditioned mode is disabled on this endpoint (ENABLE_FC=0)"}
-        if mode not in ("fbc", "fc"):
-            return {"error": f"unknown mode '{mode}' (expected 'fbc' or 'fc')"}
 
         t2i, i2i = (T2I_FBC, I2I_FBC) if mode == "fbc" else (T2I_FC, I2I_FC)
 

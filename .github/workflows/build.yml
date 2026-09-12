@@ -28,6 +28,10 @@ jobs:
             image: runpod-utility-worker
           - context: music
             image: runpod-music-worker
+          - context: relight
+            image: runpod-relight-worker
+          - context: upscale
+            image: runpod-upscale-worker
     steps:
       - uses: actions/checkout@v4
 
