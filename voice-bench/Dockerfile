@@ -34,8 +34,12 @@ FROM runpod/worker-comfyui:5.10.0-base
 # compiler -- the first build died on `No such file or directory: 'x86_64-linux-gnu-g++'`
 # inside a wheel build. The production lanes stay compiler-free (a compiler in a
 # serverless image is image size and attack surface for nothing); this rig earns it.
+#
+# python3-dev is the second half, and omitting it cost another build: with the compiler
+# present but no headers, pyworld and bitpack both died on `fatal error: Python.h: No
+# such file or directory`. A compiler alone cannot build a Python extension.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ffmpeg sox espeak-ng git build-essential \
+      ffmpeg sox espeak-ng git build-essential python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Pin the base image's torch BEFORE the suite installs anything. The suite declares 19
