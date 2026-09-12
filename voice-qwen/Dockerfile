@@ -103,6 +103,13 @@ RUN cd /comfyui && timeout 900 python main.py --quick-test-for-ci --cpu \
 RUN cd /comfyui && timeout 900 python /dev/stdin <<'PY'
 import sys
 sys.path.insert(0, "/comfyui")
+# ComfyUI parses sys.argv at import time via comfy.cli_args, and importing `nodes`
+# pulls in model_management, which calls torch.cuda.current_device() at module level.
+# CI runners have no GPU, so without --cpu this dies on "Found no NVIDIA driver"
+# before a single node is registered -- a build failure that says nothing about the
+# nodes we are actually checking. The main.py check above already passes --cpu on its
+# command line; this is the same flag, delivered the only way an inline script can.
+sys.argv = ["main.py", "--cpu"]
 print("[boot] importing nodes", flush=True)
 import nodes
 nodes.init_extra_nodes(init_custom_nodes=True)
