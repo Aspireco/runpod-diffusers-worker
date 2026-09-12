@@ -34,6 +34,8 @@ jobs:
             image: runpod-upscale-worker
           - context: video
             image: runpod-video-worker
+          - context: comfy
+            image: runpod-comfy-worker
     steps:
       - uses: actions/checkout@v4
 
