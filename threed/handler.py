@@ -207,6 +207,23 @@ def run(workflow, image_b64, params):
     res = _post("/prompt", {"prompt": wf})
     if "prompt_id" not in res:
         raise RuntimeError(f"ComfyUI rejected the graph: {json.dumps(res)[:900]}")
+
+    # A prompt can be ACCEPTED with some of its output nodes silently discarded.
+    # server.py returns {"prompt_id": ..., "number": ..., "node_errors": valid[3]} --
+    # validate_prompt drops output nodes that fail validation and proceeds as long as
+    # at least ONE output survives. So a graph whose SaveGLB terminals were rejected
+    # still gets a prompt_id, still runs, still reports status_str "success", and
+    # produces only whatever preview nodes happened to validate.
+    #
+    # That is the exact failure this worker exists to prevent, one layer up from the
+    # empty-"images" trap: not a missing result key, but a missing NODE. Refuse it.
+    node_errors = res.get("node_errors") or {}
+    if node_errors:
+        raise RuntimeError(
+            "ComfyUI accepted the prompt but dropped node(s) in validation, so the "
+            "graph would run without them: " + json.dumps(node_errors)[:2000]
+        )
+
     pid = res["prompt_id"]
     print(f"[job] queued {pid}", flush=True)
 

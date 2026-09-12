@@ -571,25 +571,42 @@ def verify_models(api, models_root="/comfyui/models"):
     print(f"[build] all {len(wanted)} referenced model files present: {sorted(wanted)}")
 
 
-def add_save_glb(api, source_ids, prefix="3d/mos"):
-    """Terminate the graph with SaveGLB nodes of our own.
+def add_save_glb(api, source_ids, node_defs, prefix="3d/mos"):
+    """Terminate the graph with SaveGLB nodes fed a native MESH.
 
-    The template ends in Save3DAdvanced, which is deliberately NOT kept: its
-    `viewport_state` input is an editor-side widget of a custom type, exactly the shape
-    that makes widget alignment ambiguous, and it carries a viewport payload we have no
-    use for headless. SaveGLB takes a mesh or a File3D plus a filename prefix and
-    nothing else, so there is nothing to misalign.
+    Deliberately wired to the MESH producers (MeshSmoothNormals / PaintMesh), NOT to
+    the MeshToFile3D wrappers the template ends with.
 
-    MeshToFile3D outputs File3DGLB, which is in SaveGLB's accepted MultiType list.
+    SaveGLB declares `IO.MultiType.Input(IO.Mesh.Input("mesh"), types=[File3DGLB, ...])`,
+    so a File3D connection is nominally legal -- but the first live run had both SaveGLB
+    terminals silently dropped during prompt validation while the graph still reported
+    success, and MultiType is the only unusual thing about that edge. Feeding the
+    primary declared type removes the question, and drops two nodes.
+
+    Save3DAdvanced is likewise not kept: its `viewport_state` is an editor-side widget
+    of a custom type, and it carries a viewport payload that is meaningless headless.
     """
     added = []
     for i, src in enumerate(source_ids):
-        if str(src) not in api:
+        key = str(src)
+        if key not in api:
             raise SystemExit(f"cannot attach SaveGLB: node {src} was pruned")
+
+        # The source must actually emit a MESH. Getting this wrong does not raise at
+        # build time -- it gets the node dropped in validation on a billing GPU, with
+        # the graph still reporting success.
+        cls = node_defs.get(api[key]["class_type"])
+        rets = tuple(getattr(cls, "RETURN_TYPES", ()) or ())
+        if rets and rets[0] != "MESH":
+            raise SystemExit(
+                f"SaveGLB source {api[key]['class_type']}#{src} emits {rets[0]!r}, not "
+                "MESH -- wire SaveGLB to a mesh producer, not a File3D wrapper"
+            )
+
         nid = str(9001 + i)
         api[nid] = {
             "class_type": "SaveGLB",
-            "inputs": {"mesh": [str(src), 0], "filename_prefix": f"{prefix}_{i}"},
+            "inputs": {"mesh": [key, 0], "filename_prefix": f"{prefix}_{i}"},
             "_meta": {"title": f"mos SaveGLB {i}"},
         }
         added.append(nid)
@@ -617,16 +634,17 @@ def main():
     if not os.path.isdir(wf):
         raise SystemExit(f"workflow dir {wf!r} does not exist")
 
-    # 285 MeshToFile3D <- MeshSmoothNormals(260) <- ApplyTextureToMesh(210): the full
-    #     PBR mesh, and the deliverable.
-    # 282 MeshToFile3D <- PaintMesh(252): the vertex-coloured mesh. Kept because it
-    #     shares all its upstream with 285 and so costs nothing extra, and it is the
-    #     fallback when UV unwrapping produces a poor atlas on a thin object.
+    # 260 MeshSmoothNormals <- ApplyTextureToMesh(210): the full PBR mesh, and the
+    #     deliverable. 252 PaintMesh: the vertex-coloured fallback, which shares all its
+    #     upstream and so costs nothing extra, and is what to use when UV unwrapping
+    #     produces a poor atlas on a thin object.
+    # Both are MESH producers -- SaveGLB is fed those directly rather than the
+    #     MeshToFile3D wrappers the template ends with. See add_save_glb().
     src = os.path.join(wf, "trellis2_image_to_mesh.ui.json")
     dst = os.path.join(wf, "trellis2_image_to_mesh.api.json")
-    api = convert(src, dst, [285, 282], defs)
+    api = convert(src, dst, [260, 252], defs)
 
-    saves = add_save_glb(api, [285, 282])
+    saves = add_save_glb(api, [260, 252], defs)
     with open(dst, "w", encoding="utf-8") as fh:
         json.dump(api, fh, indent=1)
     print(f"[build] attached SaveGLB nodes {saves}")
