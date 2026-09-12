@@ -34,8 +34,27 @@ jobs:
             image: runpod-upscale-worker
           - context: video
             image: runpod-video-worker
+          - context: vid-wan-a14b
+            image: runpod-wan-a14b-worker
           - context: comfy
             image: runpod-comfy-worker
+          # 3D lane. TRELLIS.2 + MoGe-2 + BiRefNet, ~9.6GB of weights on top of the
+          # worker-comfyui base -- the largest image in this matrix, which is why the
+          # disk-reclaim step above is load-bearing for it specifically.
+          # Hunyuan3D 2.1 is deliberately absent: it is licence-quarantined in
+          # threed/hunyuan/ and built by hand, never pushed on a commit to main.
+          - context: threed
+            image: runpod-threed-worker
+          # Voice lanes. voice-qwen is the production default (Qwen3-TTS, apache-2.0,
+          # first-class French); voice-comfy carries VibeVoice for long-form multi-speaker
+          # plus Kokoro for English bulk; voice-bench is the 19-engine shootout rig and is
+          # not a production lane. See stack-docs/VOICE-CATALOGUE.md.
+          - context: voice-qwen
+            image: runpod-voice-qwen-worker
+          - context: voice-comfy
+            image: runpod-voice-comfy-worker
+          - context: voice-bench
+            image: runpod-voice-bench-worker
           # TIER 2 CALIBRATION ONLY -- non-commercial weights, never published.
           # The image name carries the tier so it cannot be pulled into a production
           # lane by someone skimming the registry.

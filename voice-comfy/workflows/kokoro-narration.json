@@ -1,0 +1,24 @@
+{
+  "_comment": "Bulk narration lane. Kokoro-82M, Apache-2.0, 82M params, no cloning - 47 fixed voices. Use for anything where per-word diffusion cost is absurd: product-catalogue reads, IVR prompts, long explainer beds, draft scratch tracks before a VibeVoice or Qwen final.",
+  "_french_warning": "ENGLISH ONLY in practice. Kokoro ships exactly ONE French voice (ff_siwis), graded B- on under 11 hours of training data. That is hobby quality and must not ship to a francophone client. For French bulk narration use ../voice-qwen (Qwen3-TTS, French WER 2.858) even though it costs more per word. See stack-docs/VOICE-CATALOGUE.md.",
+  "_node_names": "Exact class_type and input names come from stavsap/comfyui-kokoro and can drift between node versions. If the graph 400s on validation, GET /object_info on a running instance and re-read the schema - do not guess.",
+  "1": {
+    "class_type": "KokoroSpeech",
+    "_meta": { "title": "Kokoro TTS" },
+    "inputs": {
+      "text": "Engineered white oak, seven and a half inch plank, finished in a matte natural oil. In stock at the Mississauga warehouse for immediate delivery.",
+      "speaker": "af_heart",
+      "lang": "English",
+      "speed": 1.0
+    }
+  },
+  "2": {
+    "class_type": "SaveAudioMP3",
+    "_meta": { "title": "Save MP3" },
+    "inputs": {
+      "audio": ["1", 0],
+      "filename_prefix": "voice/kokoro",
+      "quality": "320k"
+    }
+  }
+}

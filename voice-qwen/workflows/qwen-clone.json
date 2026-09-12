@@ -1,0 +1,44 @@
+{
+  "_comment": "BRAND VOICE lane: clone a real reference from ~3 seconds of audio, then speak any of the ten supported languages in it. Record the owner or presenter once in English and generate the French from the same clone - no second session, no second performer, one voice across both languages. That cross-lingual transfer is the reason this model displaced Chatterbox as the default cloning lane.",
+  "_ref_audio": "Supply ref_audio by uploading the reference with the job (worker-comfyui accepts {\"images\":[{\"name\":\"ref.wav\",\"image\":\"<base64>\"}]} - the key says images but it writes any file to ComfyUI's input dir) and pointing a LoadAudio node at that filename, wired into ref_audio below. ref_text is optional but raises fidelity noticeably: give it the exact transcript of the reference clip.",
+  "_ref_hygiene": "Reference audio must be clean speech. Music, room tone or a noise floor under the reference transfers into every generation, and unlike VibeVoice's background-music quirk there is no documented mitigation beyond a better reference. 3-10 seconds, one speaker, no processing, no compression artefacts.",
+  "_consent": "A cloned voice of a REAL, IDENTIFIABLE person is the case that attracts obligations - EU AI Act Art. 50(4) deepfake disclosure, and Quebec biometric-data provisions if voiceprints are retained. A wholly synthetic voice attracts neither. Get written consent on file before cloning anyone, and prefer a preset or designed voice where the brand does not need a specific human. See DECISIONS.md Part 1.",
+  "_x_vector_only": "x_vector_only=true conditions on speaker identity alone and discards the reference's prosody. Use it when the reference is expressive in a way you do not want copied (a shouted clip, a laughing clip) and you only want the timbre.",
+  "1": {
+    "class_type": "LoadAudio",
+    "_meta": { "title": "Load reference" },
+    "inputs": { "audio": "reference.wav" }
+  },
+  "2": {
+    "class_type": "FB_Qwen3TTSVoiceClone",
+    "_meta": { "title": "Qwen3-TTS Voice Clone" },
+    "inputs": {
+      "target_text": "Our crews lay your floor in two days, not two weeks.",
+      "model_choice": "1.7B",
+      "device": "auto",
+      "precision": "bf16",
+      "language": "English",
+      "ref_audio": ["1", 0],
+      "ref_text": "",
+      "x_vector_only": false,
+      "instruct": "",
+      "seed": 42,
+      "temperature": 0.9,
+      "top_p": 1.0,
+      "top_k": 50,
+      "repetition_penalty": 1.05,
+      "max_new_tokens": 2048,
+      "attention": "auto",
+      "unload_model_after_generate": false
+    }
+  },
+  "3": {
+    "class_type": "SaveAudioMP3",
+    "_meta": { "title": "Save MP3" },
+    "inputs": {
+      "audio": ["2", 0],
+      "filename_prefix": "voice/qwen_clone",
+      "quality": "320k"
+    }
+  }
+}
