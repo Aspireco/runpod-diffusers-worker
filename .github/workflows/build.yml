@@ -34,6 +34,11 @@ jobs:
             image: runpod-upscale-worker
           - context: video
             image: runpod-video-worker
+          # Wan 2.2 S2V: speech-to-video. Consumes a voice track (from voice-qwen) and a
+          # reference image, returns a lip-synced performance. ComfyUI-based because no
+          # WanSpeechToVideoPipeline exists in any diffusers release.
+          - context: vid-wan-s2v
+            image: runpod-wan-s2v-worker
           - context: vid-wan-a14b
             image: runpod-wan-a14b-worker
           - context: vid-hunyuan-i2v
