@@ -248,6 +248,7 @@ class Graph:
                     stack.append(src[0])
 
         api = {}
+        mismatches = []
         for nid in sorted(needed):
             node = self.nodes[nid]
             ntype = node["type"]
@@ -320,28 +321,35 @@ class Graph:
                 elif got:
                     inputs[name] = value
 
-            # Leftover widget values mean the schema and the serialised list disagree,
-            # i.e. something shifted. Fail the BUILD rather than emit a graph whose
-            # parameters are quietly wrong.
+            # Slots and values must balance. Leftover values mean the schema and the
+            # serialised list disagree; values running out means an input is neither a
+            # listed socket nor a recognised widget and something earlier ate the wrong
+            # slot. Either way the positional mapping cannot be trusted.
+            #
+            # These are COLLECTED, not raised on the spot. Each discovery costs a full
+            # image build, and failing on the first bad node hides the rest -- three
+            # separate builds were spent learning three separate node shapes one at a
+            # time before this was changed to report them all at once.
             if wi != len(wv):
-                raise SystemExit(
-                    f"{ntype}#{nid}: consumed {wi} of {len(wv)} widget values "
-                    f"({wv!r}) -- schema and template disagree, so later inputs would "
-                    f"be misaligned. Mapped: {json.dumps(inputs)[:300]}"
+                mismatches.append(
+                    f"{ntype}#{nid}: consumed {wi} of {len(wv)} widget values {wv!r}; "
+                    f"mapped {json.dumps(inputs)[:200]}"
                 )
-            # The mirror-image failure: values ran out while schema inputs remained.
-            # Those inputs fall back to node defaults, which may be harmless -- but it
-            # also means an earlier non-socket, non-widget input ate a slot meant for
-            # something else, and every value after it is on the wrong key. Counting
-            # alone cannot tell the two apart, so refuse to guess.
-            if starved and wv:
-                raise SystemExit(
-                    f"{ntype}#{nid}: widget values ran out before inputs {starved} "
-                    f"(had {wv!r}). An input is neither a listed socket nor a widget, "
-                    "so the positional mapping cannot be trusted."
+            elif starved and wv:
+                mismatches.append(
+                    f"{ntype}#{nid}: values ran out before inputs {starved} (had {wv!r})"
                 )
 
             api[str(nid)] = {"class_type": ntype, "inputs": inputs, "_meta": {"title": node.get("title", ntype)}}
+
+        if mismatches:
+            detail = "\n  - ".join(mismatches)
+            raise SystemExit(
+                f"{len(mismatches)} node(s) whose widget slots and values do not "
+                f"balance -- the positional mapping would be wrong:\n  - {detail}\n\n"
+                "Usually one more input carries a companion widget; add its option "
+                "key to COMPANION_WIDGET_OPTS."
+            )
         return api
 
 
