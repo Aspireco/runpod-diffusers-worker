@@ -11,6 +11,14 @@ MODEL_ID picks the variant:
                                for stainless food equipment and display cases
 """
 
+import sys
+
+# First line out, before any heavy import. A crash-looping worker with NO container logs
+# at all means the process died before this ran (bad image, bad CUDA); one that prints this
+# and then stops died during an import, which is a completely different fix. Without it the
+# two are indistinguishable and you end up guessing.
+print("[boot] handler starting", flush=True)
+
 import base64
 import io
 import os
@@ -18,6 +26,8 @@ import time
 import urllib.request
 
 import torch
+print(f"[boot] torch {torch.__version__} cuda={torch.cuda.is_available()}", flush=True)
+
 from PIL import Image
 
 MODEL_ID = os.environ.get("MODEL_ID", "ZhengPeng7/BiRefNet")

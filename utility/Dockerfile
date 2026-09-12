@@ -10,16 +10,31 @@ ENV PYTHONUNBUFFERED=1 \
 RUN pip install --no-cache-dir --ignore-installed cryptography
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# BiRefNet loads through trust_remote_code, which pulls in timm and einops.
-# torch/torchvision are left as the base image ships them -- reinstalling pulls CUDA 13
-# wheels needing driver >= 580 while Runpod hosts run 570/575.
-RUN pip install --no-cache-dir \
+# BiRefNet loads through trust_remote_code, which needs timm and einops.
+#
+# The constraints file is load-bearing, not belt-and-braces. timm and kornia both declare a
+# bare `torch` dependency, so pip is free to "satisfy" it by pulling a newer torch from
+# default PyPI -- which since 2.11 means CUDA 13 wheels requiring driver >= 580. Runpod
+# hosts run 570/575, so CUDA init dies before Python writes a single line and the worker
+# crash-loops with completely empty container logs. Pinning the already-installed versions
+# as constraints makes that upgrade impossible.
+RUN python -c "import torch, torchvision, torchaudio; \
+open('/tmp/constraints.txt','w').write(''.join(f'{n}=={v}\n' for n,v in \
+[('torch',torch.__version__),('torchvision',torchvision.__version__),('torchaudio',torchaudio.__version__)]))" \
+    && cat /tmp/constraints.txt
+
+RUN pip install --no-cache-dir -c /tmp/constraints.txt \
       "transformers>=4.50.3,<5" \
       "huggingface-hub<1.0" \
       "timm" \
       "einops" \
       "kornia" \
       "runpod>=1.10.1"
+
+# Prove torch still points at the CUDA 12.8 build the base image shipped. If a dependency
+# dragged in a cu13 wheel anyway, fail the BUILD here rather than crash-looping on a GPU.
+RUN python -c "import torch; v=torch.__version__; print('torch', v); \
+assert 'cu13' not in v and not v.startswith('2.1'), f'torch was replaced: {v}'"
 
 COPY handler.py /handler.py
 RUN python -c "import ast; ast.parse(open('/handler.py').read()); print('handler parses OK')"

@@ -22,14 +22,25 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 # source, and dies on "pkgutil has no attribute ImpImporter" — Python 3.12 removed it and
 # that numpy's legacy setup.py still calls it. --no-build-isolation reuses the numpy we
 # just installed as a binary wheel instead of compiling anything.
-RUN pip install --no-cache-dir "numpy>=1.26,<3" "cython"
+# Pin the base image's torch so chatterbox's own torch requirement cannot pull a CUDA 13
+# wheel. Those need driver >= 580; Runpod hosts run 570/575 and CUDA init then dies before
+# a single log line, which reads as a crash-loop with no cause.
+RUN python -c "import torch, torchvision, torchaudio; \
+open('/tmp/constraints.txt','w').write(''.join(f'{n}=={v}\n' for n,v in \
+[('torch',torch.__version__),('torchvision',torchvision.__version__),('torchaudio',torchaudio.__version__)]))" \
+    && cat /tmp/constraints.txt
 
-RUN pip install --no-cache-dir --no-build-isolation \
+RUN pip install --no-cache-dir -c /tmp/constraints.txt "numpy>=1.26,<3" "cython"
+
+RUN pip install --no-cache-dir --no-build-isolation -c /tmp/constraints.txt \
       "chatterbox-tts" \
-    && pip install --no-cache-dir \
+    && pip install --no-cache-dir -c /tmp/constraints.txt \
       "transformers>=4.50.3,<5" \
       "huggingface-hub<1.0" \
       "runpod>=1.10.1"
+
+RUN python -c "import torch; v=torch.__version__; print('torch', v); \
+assert 'cu13' not in v, f'torch was replaced: {v}'"
 
 COPY handler.py /handler.py
 RUN python -c "import ast; ast.parse(open('/handler.py').read()); print('handler parses OK')"
