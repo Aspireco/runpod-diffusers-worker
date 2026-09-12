@@ -36,8 +36,6 @@ open('/tmp/constraints.txt','w').write(''.join(f'{n}=={v}\n' for n,v in \
 # transformer_2 slot in WanImageToVideoPipeline and AutoencoderKLWan, and the repo's own
 # model_index.json declares _diffusers_version 0.35.0.dev0. Older releases load the first
 # expert, ignore the second, and produce degraded video with no error.
-# torchao supplies the fp8 arm of the benchmark; it is optional at runtime and the handler
-# falls back to bf16 if the import fails, so a torchao break cannot take the lane down.
 RUN pip install --no-cache-dir -c /tmp/constraints.txt \
       "diffusers>=0.35" \
       "transformers>=4.50.3,<5" \
@@ -47,7 +45,6 @@ RUN pip install --no-cache-dir -c /tmp/constraints.txt \
       "protobuf" \
       "ftfy" \
       "imageio" \
-      "torchao" \
       "runpod>=1.10.1"
 
 # Fail the BUILD, not a billing GPU, if torch was swapped or the MoE classes are absent.
@@ -59,6 +56,35 @@ p = set(inspect.signature(WanImageToVideoPipeline.__init__).parameters); \
 assert 'transformer_2' in p, f'diffusers {diffusers.__version__} has no MoE second expert: {sorted(p)}'; \
 print('Wan MoE pipeline OK, dual-expert slot present')"
 
+
+# torchao LAST, in its own layer, and pinned -- all three deliberate.
+#
+# An unpinned `torchao` broke this build once, and not in its own code: torchao declares NO
+# torch dependency in its metadata, so pip installed the newest release (built for torch
+# 2.9+) alongside the base image's torch 2.8. diffusers autodetects torchao and imports its
+# integration, which reaches for `torch.nn.functional.ScalingType` -- absent in 2.8. The
+# result was `cannot import name 'ScalingType'` raised from
+# `diffusers.models.autoencoders.autoencoder_kl_wan`: an optional benchmark dependency
+# silently broke EVERY diffusers import. The cu13 torch guard above passed throughout,
+# because torch itself was never replaced -- a constraints file pins what pip resolves, it
+# cannot pin what a dependency expects at runtime.
+#
+# 0.13.0 is the release built in the torch 2.8 window: torch 2.8.0 2025-08-06, torchao
+# 0.13.0 2025-09-04, then torchao 0.14.0 2025-10-13 ships with torch 2.9.0 2025-10-15.
+#
+# It is installed after the diffusers check on purpose, so the core lane is proven sound
+# before an optional dependency is allowed near it and any future break is unambiguously
+# torchao's. The handler also try/excepts the import and reports the dtype that actually
+# ran, so a runtime failure degrades to bf16 honestly instead of mislabelling the result.
+RUN pip install --no-cache-dir -c /tmp/constraints.txt "torchao==0.13.0"
+
+# The check that would have caught the original failure: does diffusers STILL import once
+# torchao is present, and does the fp8 entry point actually resolve?
+RUN python -c "\
+import torch; assert 'cu13' not in torch.__version__, f'torch replaced: {torch.__version__}'; \
+from diffusers import AutoencoderKLWan, WanImageToVideoPipeline; \
+import torchao; from torchao.quantization import float8_weight_only, quantize_; \
+print('torchao', torchao.__version__, 'coexists with diffusers; fp8 arm available')"
 COPY handler.py /handler.py
 RUN python -c "import ast; ast.parse(open('/handler.py').read()); print('handler parses OK')"
 
