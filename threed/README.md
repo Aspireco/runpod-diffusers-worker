@@ -72,6 +72,21 @@ directly it is usable — royalty-free, worldwide, commercial use permitted, no 
 cap, no MAU trigger, no territory exclusion — but "TRELLIS.2 is MIT" is true of
 Microsoft's part, not of the whole pipeline. Full working in the benchmark doc.
 
+## The template defaults to a different model
+
+ComfyUI publishes this workflow as **"Pixal3D & TRELLIS.2: Image to Model"**, and the
+boolean driving its three If/Else switches — titled "Boolean (Switch to Trellis2)" —
+ships set to **`False`**. Out of the box it runs **Pixal3D**, not TRELLIS.2.
+
+`build_api_workflows.py` sets it explicitly (`USE_TRELLIS2 = True`) and resolves the
+switches at build time, which prunes the unselected branch and everything only it feeds
+— 56 nodes down to 40, and Pixal3D's 5 GB checkpoint kept out of the image. A build-time
+guard fails if a refreshed template flips the default back.
+
+To run Pixal3D instead (also MIT, TencentARC): set `USE_TRELLIS2 = False` and add a
+`fetch-model` line for
+`Comfy-Org/Pixal3D/diffusion_models/pixal3d_int8_convrot.safetensors`.
+
 ## Why ComfyUI
 
 ComfyUI **v0.34.0** ships TRELLIS.2 in core (`comfy/ldm/trellis2`,
