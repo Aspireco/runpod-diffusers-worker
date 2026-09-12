@@ -17,6 +17,11 @@
 # DECISIONS.md.
 FROM runpod/worker-comfyui:5.10.0-base
 
+# HuggingFace pulls below are AUTHENTICATED when the CI secret is present.
+# Anonymous pulls from pooled GitHub runner IPs hit HTTP 429 once several weight-baking
+# lanes build concurrently. The token arrives as a BuildKit secret, not a build-arg, so
+# it never lands in the image layer history. `|| true` keeps a local build working with
+# no secret -- it just falls back to anonymous.
 # Custom nodes, by Comfy Registry name. Deliberately NOT installed, all non-commercial:
 #   ComfyUI-SUPIR          licence forbids "image analysis, enhancement, or modification
 #                          for clients" -- a description of this business
@@ -37,7 +42,10 @@ RUN rm -rf /comfyui/custom_nodes/*frame*interpolation*/vfi_models/m2m \
 
 # Real-ESRGAN x4plus, BSD-3-Clause, from xinntao's own release. NOT 4x-UltraSharp or
 # 4x-Remacri -- the two most-used upscalers in ComfyUI and both CC-BY-NC-SA.
-RUN comfy model download \
+RUN --mount=type=secret,id=hf_token \
+    HF_TOKEN="$(cat /run/secrets/hf_token 2>/dev/null || true)" \
+    HUGGING_FACE_HUB_TOKEN="$HF_TOKEN" \
+    comfy model download \
       --url https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth \
       --relative-path models/upscale_models \
       --filename RealESRGAN_x4plus.pth
@@ -45,7 +53,10 @@ RUN comfy model download \
 # IC-Light v1, background-conditioned. This is the checkpoint that relights a cut-out
 # product to match a supplied scene -- the thing that makes a cedar bench look photographed
 # in the room rather than pasted onto it. v2 is FLUX-based and non-commercial.
-RUN comfy model download \
+RUN --mount=type=secret,id=hf_token \
+    HF_TOKEN="$(cat /run/secrets/hf_token 2>/dev/null || true)" \
+    HUGGING_FACE_HUB_TOKEN="$HF_TOKEN" \
+    comfy model download \
       --url https://huggingface.co/lllyasviel/ic-light/resolve/main/iclight_sd15_fbc.safetensors \
       --relative-path models/unet \
       --filename iclight_sd15_fbc.safetensors
@@ -63,7 +74,10 @@ RUN comfy model download \
 # LICENCE: creativeml-openrail-m. Commercial use is permitted -- OpenRAIL is a use-based
 # licence (it forbids specific harmful applications), not a non-commercial one. Distinct
 # from the CC-BY-NC weights excluded above.
-RUN comfy model download \
+RUN --mount=type=secret,id=hf_token \
+    HF_TOKEN="$(cat /run/secrets/hf_token 2>/dev/null || true)" \
+    HUGGING_FACE_HUB_TOKEN="$HF_TOKEN" \
+    comfy model download \
       --url https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5/resolve/main/v1-5-pruned-emaonly.safetensors \
       --relative-path models/checkpoints \
       --filename v1-5-pruned-emaonly.safetensors
