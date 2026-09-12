@@ -129,17 +129,25 @@ def load_node_defs():
 
 
 def input_spec(cls):
-    """Ordered [(name, type, options)] for a node class.
+    """Ordered [(name, type, options, dynamic_options)] for a node class.
 
     Order is load-bearing: widget values are matched to inputs positionally, so getting
     the sequence wrong silently assigns values to the wrong keys.
 
-    INPUT_TYPES() alone is not a reliable source of it. ComfyUI's V3 nodes declare a
-    single ordered `inputs` list mixing required and optional entries, and the V1
-    compatibility view buckets them into {"required": ..., "optional": ...}. Order is
-    preserved inside each bucket but the interleaving is lost, so an optional widget
-    declared before a required one ends up after it. Ask define_schema() for the real
-    order where the node has one, and use INPUT_TYPES only for the types and options.
+    INPUT_TYPES() alone is not a reliable source of it. V3 nodes declare a single
+    ordered `inputs` list mixing required and optional entries, and the V1 view buckets
+    them into {"required": ..., "optional": ...} -- order survives inside each bucket
+    but the interleaving is lost. So define_schema() supplies the order and INPUT_TYPES
+    only the types.
+
+    The fourth element is for DynamicCombo inputs. Those advertise every sub-input of
+    EVERY option in the flattened V1 view (DynamicCombo.Input.get_dynamic() returns
+    `[self] + [i for option in self.options for i in option.inputs]`), while the editor
+    serialises only the sub-widgets of the SELECTED option. RemeshMesh is the example:
+    `sign_mode` picks between a "udf" branch with three booleans and an "sdf" branch
+    with two, so its 9 schema inputs serialise as 11 widget values when "udf" is
+    chosen. Which extra slots exist cannot be known until the combo's value is read,
+    so the option objects are carried through to the caller.
     """
     it = cls.INPUT_TYPES()
     meta = {}
@@ -152,23 +160,33 @@ def input_spec(cls):
                 typ, opts = spec, {}
             meta[name] = (typ, opts)
 
-    order = None
+    order, dynamic = None, {}
     define = getattr(cls, "define_schema", None)
     if define is not None:
         try:
             schema_inputs = define().inputs or []
-            names = [getattr(i, "id", None) or getattr(i, "name", None) for i in schema_inputs]
-            names = [n for n in names if n in meta]
-            # Only trust it if it accounts for every input; a partial list would be
-            # worse than the bucketed order.
-            if len(names) == len(meta) and len(set(names)) == len(names):
+            names = []
+            for i in schema_inputs:
+                nid = getattr(i, "id", None) or getattr(i, "name", None)
+                if nid is None:
+                    continue
+                names.append(nid)
+                opts_list = getattr(i, "options", None)
+                # A DynamicCombo's options are Option objects carrying .key/.inputs.
+                # Plain combos also have list-ish options, so require the shape.
+                if opts_list and all(hasattr(o, "key") and hasattr(o, "inputs") for o in opts_list):
+                    dynamic[nid] = list(opts_list)
+            # Names the schema does not list are the flattened dynamic sub-inputs; they
+            # are emitted inline when their branch is selected, so they are dropped here
+            # rather than being treated as top-level positional widgets.
+            if names and len(set(names)) == len(names) and all(n in meta for n in names):
                 order = names
         except Exception:
-            order = None
+            order, dynamic = None, {}
 
     if order is None:
         order = list(meta)
-    return [(n, meta[n][0], meta[n][1]) for n in order]
+    return [(n, meta[n][0], meta[n][1], dynamic.get(n)) for n in order]
 
 
 def is_widget(typ, opts):
@@ -287,7 +305,7 @@ class Graph:
             inputs = {}
             starved = []
 
-            for name, typ, opts in input_spec(cls):
+            for name, typ, opts, dyn_options in input_spec(cls):
                 holds_slot = is_widget(typ, opts) or name not in sockets
                 value, got = None, False
                 if holds_slot:
@@ -307,6 +325,30 @@ class Graph:
                         if (any(opts.get(k) for k in COMPANION_WIDGET_OPTS)
                                 and wi < len(wv) and isinstance(wv[wi], str)):
                             wi += 1
+
+                        # A DynamicCombo's SELECTED branch contributes one slot per
+                        # sub-input, immediately after the combo's own value. They are
+                        # emitted as ordinary named inputs, which is how the editor
+                        # posts them; ComfyUI's dynamic-input layer reassembles them
+                        # into the dict execute() receives.
+                        if dyn_options:
+                            branch = next((o for o in dyn_options
+                                           if str(getattr(o, "key", "")) == str(value)), None)
+                            if branch is None:
+                                mismatches.append(
+                                    f"{ntype}#{nid}.{name}: value {value!r} matches no "
+                                    f"DynamicCombo option ({[getattr(o, 'key', '?') for o in dyn_options]})"
+                                )
+                            else:
+                                for sub in getattr(branch, "inputs", []):
+                                    sid = getattr(sub, "id", None) or getattr(sub, "name", None)
+                                    if sid is None:
+                                        continue
+                                    if wi < len(wv):
+                                        inputs[sid] = wv[wi]
+                                        wi += 1
+                                    else:
+                                        starved.append(sid)
                     else:
                         starved.append(name)
 
