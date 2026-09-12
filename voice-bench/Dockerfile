@@ -103,6 +103,14 @@ sys.path.insert(0, "/comfyui")
 # nodes we are actually checking. The main.py check above already passes --cpu on its
 # command line; this is the same flag, delivered the only way an inline script can.
 sys.argv = ["main.py", "--cpu"]
+# ...and setting sys.argv alone is NOT enough, which the previous build proved by
+# failing here anyway. comfy/cli_args.py ends with `if comfy.options.args_parsing:
+# args = parser.parse_args()` else `parser.parse_args([])`. That flag defaults to
+# False, so an inline script's --cpu is silently discarded and args.cpu stays False.
+# main.py works only because its first two lines flip the flag. These are those two
+# lines, and they must come before `import nodes` pulls in model_management.
+import comfy.options
+comfy.options.enable_args_parsing()
 print("[boot] importing nodes", flush=True)
 import nodes
 nodes.init_extra_nodes(init_custom_nodes=True)

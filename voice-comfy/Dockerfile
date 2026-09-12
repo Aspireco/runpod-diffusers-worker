@@ -104,14 +104,30 @@ open('/tmp/constraints.txt','w').write(''.join(f'{n}=={v}\n' for n,v in \
 assert 'cu13' not in v, f'torch was replaced: {v}'" \
     && python -c "import kokoro_onnx, onnxruntime; print('kokoro_onnx + onnxruntime import OK')"
 
-# Kokoro. The node fetches an ONNX graph from a GitHub release and then assembles a voice
-# pack by pulling 50-odd .pt files from hexgrad/Kokoro-82M one at a time and np.savez-ing
-# them into voices_v1.bin. Doing that on a cold GPU means ~50 sequential HTTPS round trips
-# before the first word is spoken, and any one of them failing takes the job with it. Run
-# the node's OWN downloader at build time so the artefacts are baked in exactly the shape
-# it expects -- reimplementing the packing here would drift the moment the node changes it.
+# Kokoro. Two artefacts: an ONNX graph from a GitHub release, and a voice pack.
+#
+# WHY NOT THE NODE'S OWN DOWNLOADER. The first build used it and failed on a HuggingFace
+# **429 Too Many Requests**. download_voices() pulls ~50 individual .pt files from
+# hexgrad/Kokoro-82M one at a time and np.savez-es them into voices_v1.bin -- 50 sequential
+# requests against a rate limiter this project has already tripped once (DECISIONS 0.3, the
+# LTX-2.5 download). That is not a flake to retry; at 50 requests per build it is the
+# expected outcome.
+#
+# So take the pre-packed voices file from the kokoro-onnx release instead: ONE GitHub
+# download, no HuggingFace involved. It is the same artefact -- an npz keyed by voice name,
+# exactly what np.savez produces and what kokoro_onnx.Kokoro() expects -- so the node cannot
+# tell the difference. Verified before committing: 54 voices, 28.2MB, af_heart and ff_siwis
+# both present with shape (510, 1, 256).
+#
+# The node module is still imported for its constants rather than hard-coding filenames, so
+# a rename upstream surfaces here instead of as a file the node cannot find.
 RUN python /dev/stdin <<'PY'
 import importlib.util, os, sys, urllib.request
+import numpy as np
+
+VOICES_URL = ("https://github.com/thewh1teagle/kokoro-onnx/releases/download/"
+              "model-files-v1.0/voices-v1.0.bin")
+
 root = "/comfyui/custom_nodes"
 cands = [d for d in os.listdir(root) if "kokoro" in d.lower()]
 assert cands, "kokoro node not found after comfy-node-install"
@@ -120,16 +136,26 @@ spec = importlib.util.spec_from_file_location("kk", os.path.join(node_dir, "Comf
 mod = importlib.util.module_from_spec(spec)
 sys.modules["kk"] = mod
 spec.loader.exec_module(mod)
+
 onnx = os.path.join(node_dir, mod.MODEL_FILENAME)
 print("[kokoro] fetching", mod.MODEL_URL, flush=True)
 urllib.request.urlretrieve(mod.MODEL_URL, onnx)
 assert os.path.getsize(onnx) > 50_000_000, "onnx too small -- fetch returned an error page"
 print("[kokoro] onnx", round(os.path.getsize(onnx) / 1e6, 1), "MB", flush=True)
-mod.download_voices(node_dir)
+
 vb = os.path.join(node_dir, mod.VOICES_FILENAME)
-assert os.path.getsize(vb) > 1_000_000, "voice pack too small -- downloads failed silently"
+print("[kokoro] fetching voice pack", VOICES_URL, flush=True)
+urllib.request.urlretrieve(VOICES_URL, vb)
+assert os.path.getsize(vb) > 10_000_000, "voice pack too small -- fetch returned an error page"
+
+# Prove it is a real npz containing the voices the node offers in its dropdown, rather than
+# trusting the file size. A pack missing a voice the node lists would fail at request time
+# on a billing GPU, naming a voice the operator picked from a menu.
+have = set(np.load(vb).files)
+missing = [v for v in mod.supported_voices if v not in have]
+assert not missing, f"voice pack is missing voices the node offers: {missing}"
 print("[kokoro] voices", round(os.path.getsize(vb) / 1e6, 1), "MB,",
-      len(mod.supported_voices), "voices", flush=True)
+      len(have), "in pack,", len(mod.supported_voices), "offered by the node", flush=True)
 PY
 
 # ---------------------------------------------------------------------------------------
@@ -179,6 +205,14 @@ sys.path.insert(0, "/comfyui")
 # nodes we are actually checking. The main.py check above already passes --cpu on its
 # command line; this is the same flag, delivered the only way an inline script can.
 sys.argv = ["main.py", "--cpu"]
+# ...and setting sys.argv alone is NOT enough, which the previous build proved by
+# failing here anyway. comfy/cli_args.py ends with `if comfy.options.args_parsing:
+# args = parser.parse_args()` else `parser.parse_args([])`. That flag defaults to
+# False, so an inline script's --cpu is silently discarded and args.cpu stays False.
+# main.py works only because its first two lines flip the flag. These are those two
+# lines, and they must come before `import nodes` pulls in model_management.
+import comfy.options
+comfy.options.enable_args_parsing()
 print("[boot] importing nodes", flush=True)
 import nodes
 nodes.init_extra_nodes(init_custom_nodes=True)

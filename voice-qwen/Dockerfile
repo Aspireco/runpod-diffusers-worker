@@ -52,6 +52,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg sox \
 # because not every one of these ships a wheel at every version, and a hard refusal here
 # fails the build for a package that would have compiled fine.
 #
+# NOTE `sox` here is the PYTHON package, which is NOT the apt `sox` binary installed
+# above -- the first build installed the binary and the node still died on
+# `ModuleNotFoundError: No module named 'sox'`. Both are needed: pysox shells out to
+# the binary, so neither alone is sufficient.
+#
 # onnxruntime-openvino from the node's requirements is deliberately skipped: it is an Intel
 # CPU inference runtime, useless on an NVIDIA serverless host, and it drags in a second
 # runtime stack for nothing.
@@ -61,11 +66,12 @@ open('/tmp/constraints.txt','w').write(''.join(f'{n}=={v}\n' for n,v in \
     && cat /tmp/constraints.txt \
     && pip install --no-cache-dir -c /tmp/constraints.txt --prefer-binary \
          "transformers>=4.57.0,<5" "librosa" "soundfile" "einops" "tiktoken" \
-         "sentencepiece" "accelerate" "scipy>=1.11.0" "safetensors" \
+         "sentencepiece" "accelerate" "scipy>=1.11.0" "safetensors" "sox" \
     && python -c "import torch; v=torch.__version__; print('torch', v); \
 assert 'cu13' not in v, f'torch was replaced: {v}'" \
     && python -c "import librosa, soundfile, tiktoken, sentencepiece, transformers; \
-print('qwen3-tts node deps OK, transformers', transformers.__version__)"
+print('qwen3-tts node deps OK, transformers', transformers.__version__)" \
+    && python -c "import sox; print('python sox OK')"
 
 # Use the node's OWN downloader rather than a hand-rolled file list. It resolves
 # ComfyUI/models/qwen-tts/<repo-basename>/ via snapshot_download, which is the exact
@@ -137,6 +143,14 @@ sys.path.insert(0, "/comfyui")
 # nodes we are actually checking. The main.py check above already passes --cpu on its
 # command line; this is the same flag, delivered the only way an inline script can.
 sys.argv = ["main.py", "--cpu"]
+# ...and setting sys.argv alone is NOT enough, which the previous build proved by
+# failing here anyway. comfy/cli_args.py ends with `if comfy.options.args_parsing:
+# args = parser.parse_args()` else `parser.parse_args([])`. That flag defaults to
+# False, so an inline script's --cpu is silently discarded and args.cpu stays False.
+# main.py works only because its first two lines flip the flag. These are those two
+# lines, and they must come before `import nodes` pulls in model_management.
+import comfy.options
+comfy.options.enable_args_parsing()
 print("[boot] importing nodes", flush=True)
 import nodes
 nodes.init_extra_nodes(init_custom_nodes=True)
