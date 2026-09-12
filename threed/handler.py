@@ -37,6 +37,9 @@ import runpod
 COMFY = os.environ.get("COMFY_HOST", "127.0.0.1:8188")
 BOOT_TIMEOUT = int(os.environ.get("COMFY_BOOT_TIMEOUT", "300"))
 JOB_TIMEOUT = int(os.environ.get("COMFY_JOB_TIMEOUT", "1800"))
+# Ceiling on what we will hand back inline. RunPod drops an oversized job output
+# entirely rather than truncating it, so this must fail loudly below their limit.
+MAX_RETURN_BYTES = int(os.environ.get("MAX_RETURN_BYTES", str(8 * 1024 * 1024)))
 WORKFLOW_DIR = os.environ.get("WORKFLOW_DIR", "/workflows")
 
 # Loaded at module import so FlashBoot snapshots a process that already has them --
@@ -275,6 +278,26 @@ def run(workflow, image_b64, params):
                     "node_classes_submitted": {k: v for k, v in sorted(submitted.items())},
                     "prompt_id": pid,
                 })[:3500])
+            # RunPod carries the handler's return value as the job output, and an
+            # oversized payload does not arrive truncated -- it arrives as an EMPTY
+            # output on an otherwise COMPLETED job. That is indistinguishable from
+            # "the worker returned nothing", which is exactly the kind of silent
+            # success this worker exists to refuse.
+            #
+            # A 700k-face mesh with a 4096 atlas is tens of MB before base64 adds its
+            # third. Say so, with the numbers and the knobs, instead of letting the
+            # response evaporate somewhere between here and the client.
+            total = sum(len(m.get("data") or "") for m in meshes)
+            if total > MAX_RETURN_BYTES:
+                raise RuntimeError(
+                    f"mesh generated successfully but the base64 payload is "
+                    f"{total/1e6:.1f} MB, over the {MAX_RETURN_BYTES/1e6:.0f} MB return "
+                    f"limit -- RunPod would deliver this as an empty output. Files: "
+                    + json.dumps([{"filename": m["filename"], "MB": round(m["bytes"]/1e6, 2)}
+                                  for m in meshes])
+                    + ". Re-run with a smaller target_faces and/or texture_size, or "
+                      "configure BUCKET_ENDPOINT_URL so results go to S3 instead."
+                )
             return {"meshes": meshes, "all_files": [f["filename"] for f in files], "prompt_id": pid}
         time.sleep(2)
     raise RuntimeError(f"job {pid} exceeded {JOB_TIMEOUT}s")
