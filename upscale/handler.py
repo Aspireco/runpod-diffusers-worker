@@ -249,10 +249,18 @@ def _probe(path):
     if not fps:
         fps = 30.0
 
-    duration = float(j.get("format", {}).get("duration") or 0) or 0.0
-    # nb_frames is absent or wrong on plenty of containers, so the count is estimated for
-    # the up-front guard only; the decode loop just reads until the pipe runs dry.
-    frames = int(video.get("nb_frames") or 0) or int(round(duration * fps))
+    # Some ffprobe builds write the string "N/A" where others omit the field entirely,
+    # and a bare int()/float() on that is a crash on a perfectly ordinary file.
+    def _num(value, cast):
+        try:
+            return cast(value)
+        except (TypeError, ValueError):
+            return cast(0)
+
+    duration = _num(j.get("format", {}).get("duration"), float)
+    # nb_frames is absent or wrong on plenty of containers, so the count is an estimate
+    # for the up-front guard only; the decode loop reads until the pipe runs dry.
+    frames = _num(video.get("nb_frames"), int) or int(round(duration * fps))
     has_audio = any(s.get("codec_type") == "audio" for s in streams)
     return int(video["width"]), int(video["height"]), fps, has_audio, frames
 
@@ -407,24 +415,28 @@ def _interpolate_job(job_input, work):
     enc, err = _open_encoder(dst, w, h, out_fps, video if keep_audio else None)
     steps = [i / multiplier for i in range(1, multiplier)]
 
-    prev, written = None, 0
-    for arr in _decode_frames(video, w, h):
-        cur = _to_tensor(arr).to(DEVICE)
-        if prev is not None:
-            for mid in _rife(prev, cur, steps, flow_scale):
-                _feed(enc, err, _from_tensor(mid).tobytes())
-                written += 1
-        # Source frames are passed through as-is rather than round-tripped through the
-        # tensor path, so the originals come out bit-identical.
-        _feed(enc, err, arr.tobytes())
-        written += 1
-        prev = cur
-
-    if prev is None:
-        enc.kill()
-        err.close()
-        return {"error": "no frames decoded from the input video"}
-    _close_encoder(enc, err)
+    prev, written, finished = None, 0, False
+    try:
+        for arr in _decode_frames(video, w, h):
+            cur = _to_tensor(arr).to(DEVICE)
+            if prev is not None:
+                for mid in _rife(prev, cur, steps, flow_scale):
+                    _feed(enc, err, _from_tensor(mid).tobytes())
+                    written += 1
+            # Source frames are passed through as-is rather than round-tripped through
+            # the tensor path, so the originals come out bit-identical.
+            _feed(enc, err, arr.tobytes())
+            written += 1
+            prev = cur
+        if prev is None:
+            raise RuntimeError("no frames decoded from the input video")
+        _close_encoder(enc, err)
+        finished = True
+    finally:
+        if not finished:
+            enc.kill()
+            enc.wait()
+            err.close()
 
     with open(dst, "rb") as f:
         blob = f.read()
