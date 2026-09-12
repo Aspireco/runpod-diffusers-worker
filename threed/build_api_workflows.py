@@ -40,6 +40,7 @@ THE FOUR THINGS THAT MAKE THIS NON-TRIVIAL
 
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, "/comfyui")
@@ -242,9 +243,28 @@ class Graph:
         return api
 
 
+SUBGRAPH_TYPE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
 def convert(ui_path, out_path, keep_ids, node_defs):
     with open(ui_path, encoding="utf-8") as fh:
         ui = json.load(fh)
+
+    # A node whose type is a UUID is a ComfyUI *subgraph* -- a nested graph stored in
+    # the workflow's `definitions.subgraphs`, not a registered node class. Expanding one
+    # means inlining its nodes and rewriting its boundary links, which this converter
+    # does not do. Say so plainly: the alternative is a "node type not installed"
+    # message that sends the reader looking for a missing custom node that was never
+    # missing. The MoGe scene template is built this way.
+    subs = sorted({n["type"] for n in ui.get("nodes", []) if SUBGRAPH_TYPE.match(n.get("type", ""))})
+    if subs:
+        raise SystemExit(
+            f"{os.path.basename(ui_path)} contains {len(subs)} ComfyUI subgraph node(s) "
+            f"({subs[0]}...). Subgraph expansion is not implemented; flatten the "
+            "template in the ComfyUI editor (right-click the subgraph -> Unpack) and "
+            "re-export before converting."
+        )
+
     g = Graph(ui, node_defs)
 
     missing = [i for i in keep_ids if i not in g.nodes]

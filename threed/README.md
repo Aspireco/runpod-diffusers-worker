@@ -49,8 +49,16 @@ Easiest client is [`threed-pipeline/mesh_from_image.py`](../../threed-pipeline/m
 | TRELLIS.2 shape VAE | 1.10 GB | MIT | |
 | TRELLIS.2 texture VAE | 0.95 GB | MIT | |
 | DINOv3 ViT-L | 1.22 GB | Meta DINOv3 Licence | image encoder — **not MIT**, see below |
-| MoGe-2 | 0.66 GB | MIT | camera FOV; also the room-scale lane |
+| MoGe-2 | 0.66 GB | MIT | camera FOV for the TRELLIS.2 graph |
 | BiRefNet | 0.44 GB | MIT | subject cut-out |
+
+Only `trellis2_image_to_mesh` is exposed as a workflow. MoGe-2's weights are present
+and drive the FOV estimate inside that graph, but the standalone *photo → scene mesh*
+workflow is **not wired**: ComfyUI ships that template built around a **subgraph**, and
+the build-time converter does not expand subgraphs. The template is vendored at
+`workflows/moge_photo_to_scene.ui.json` for reference, and the converter raises an
+error naming the problem if pointed at it. Unpack the subgraph in the ComfyUI editor
+and re-export to enable it.
 
 **DINOv3 is the one non-MIT component.** Comfy-Org's repackaged repo tags itself `mit`,
 but the upstream `facebook/dinov3-*` repos are gated under Meta's own licence. Read
