@@ -1,7 +1,15 @@
 # Chatterbox Multilingual TTS. Weights (~3.5GB) are fetched on first boot rather than
 # baked: they're small enough that the pull is quick, and Chatterbox contacts the hub even
 # with a warm cache, so forcing offline mode here would crash-loop it.
-FROM runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404
+# BASE PINNED TO torch 2.6.0 ON PURPOSE -- do not "upgrade" this line.
+# chatterbox-tts hard-pins torch==2.6.0 at EVERY published version (0.1.0-0.1.3 and 0.1.7
+# pin torch==2.6.0; 0.1.4-0.1.6 instead pin numpy<1.26.0). The torch280 base ships
+# 2.8.0+cu128 and numpy 2.1.2, so pip has no satisfiable version at all and reports
+# ResolutionImpossible. Six build attempts were spent tuning pip flags against what is a
+# hard == pin -- no flag can fix that; only a base whose torch matches can.
+# cu1281 is kept deliberately: Runpod hosts run driver 570/575, and a CUDA 13 build needs
+# >= 580, which dies at CUDA init before Python emits a line.
+FROM runpod/pytorch:1.2.0-cu1281-torch260-ubuntu2404
 
 ENV PYTHONUNBUFFERED=1 \
     HF_HOME=/opt/hf \
@@ -13,9 +21,11 @@ RUN pip install --no-cache-dir --ignore-installed cryptography
 
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# Pin the base image's torch so chatterbox's own torch requirement cannot pull a CUDA 13
-# wheel. Those need driver >= 580; Runpod hosts run 570/575 and CUDA init then dies before
-# a single log line, which reads as a crash-loop with no cause.
+# Pin the base image's torch so nothing in the dependency tree can pull a CUDA 13 wheel.
+# Those need driver >= 580; Runpod hosts run 570/575 and CUDA init then dies before a single
+# log line, which reads as a crash-loop with no cause. With the torch260 base this constraint
+# now AGREES with chatterbox's torch==2.6.0 pin instead of contradicting it -- PEP 440 treats
+# the local label in 2.6.0+cu128 as satisfying a bare ==2.6.0.
 RUN python -c "import torch, torchvision, torchaudio; \
 open('/tmp/constraints.txt','w').write(''.join(f'{n}=={v}\n' for n,v in \
 [('torch',torch.__version__),('torchvision',torchvision.__version__),('torchaudio',torchaudio.__version__)]))" \
