@@ -110,9 +110,20 @@ def load_node_defs():
 
 
 def input_spec(cls):
-    """Ordered [(name, type, options)] for a node class, required then optional."""
+    """Ordered [(name, type, options)] for a node class.
+
+    Order is load-bearing: widget values are matched to inputs positionally, so getting
+    the sequence wrong silently assigns values to the wrong keys.
+
+    INPUT_TYPES() alone is not a reliable source of it. ComfyUI's V3 nodes declare a
+    single ordered `inputs` list mixing required and optional entries, and the V1
+    compatibility view buckets them into {"required": ..., "optional": ...}. Order is
+    preserved inside each bucket but the interleaving is lost, so an optional widget
+    declared before a required one ends up after it. Ask define_schema() for the real
+    order where the node has one, and use INPUT_TYPES only for the types and options.
+    """
     it = cls.INPUT_TYPES()
-    out = []
+    meta = {}
     for section in ("required", "optional"):
         for name, spec in (it.get(section) or {}).items():
             if isinstance(spec, (list, tuple)) and spec:
@@ -120,8 +131,25 @@ def input_spec(cls):
                 opts = spec[1] if len(spec) > 1 and isinstance(spec[1], dict) else {}
             else:
                 typ, opts = spec, {}
-            out.append((name, typ, opts))
-    return out
+            meta[name] = (typ, opts)
+
+    order = None
+    define = getattr(cls, "define_schema", None)
+    if define is not None:
+        try:
+            schema_inputs = define().inputs or []
+            names = [getattr(i, "id", None) or getattr(i, "name", None) for i in schema_inputs]
+            names = [n for n in names if n in meta]
+            # Only trust it if it accounts for every input; a partial list would be
+            # worse than the bucketed order.
+            if len(names) == len(meta) and len(set(names)) == len(names):
+                order = names
+        except Exception:
+            order = None
+
+    if order is None:
+        order = list(meta)
+    return [(n, meta[n][0], meta[n][1]) for n in order]
 
 
 def is_widget(typ, opts):
