@@ -32,12 +32,21 @@ open('/tmp/constraints.txt','w').write(''.join(f'{n}=={v}\n' for n,v in \
 
 RUN pip install --no-cache-dir -c /tmp/constraints.txt "numpy>=1.26,<3" "cython"
 
+# Deliberately NOT pinning transformers here. The house pin is >=4.50.3, but chatterbox
+# targets an older transformers and fails on the newer one with
+#   ModuleNotFoundError: Could not import module 'LlamaModel'
+# — its lazy import shim can't resolve the class against the changed API. Let chatterbox
+# resolve its own transformers; torch stays pinned by the constraints file, which is the
+# dependency that actually breaks CUDA if it moves.
 RUN pip install --no-cache-dir --no-build-isolation -c /tmp/constraints.txt \
-      "chatterbox-tts" \
+      "chatterbox-tts" "accelerate" \
     && pip install --no-cache-dir -c /tmp/constraints.txt \
-      "transformers>=4.50.3,<5" \
       "huggingface-hub<1.0" \
       "runpod>=1.10.1"
+
+# Fail the build if the import that just broke at runtime still breaks.
+RUN python -c "import transformers; print('transformers', transformers.__version__); \
+from transformers import LlamaModel; print('LlamaModel import OK')"
 
 RUN python -c "import torch; v=torch.__version__; print('torch', v); \
 assert 'cu13' not in v, f'torch was replaced: {v}'"
