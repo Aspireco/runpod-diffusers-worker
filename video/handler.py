@@ -130,9 +130,37 @@ def _load_image(job_input):
     return Image.open(io.BytesIO(data)).convert("RGB")
 
 
-def _frames_to_mp4(frames, fps: int) -> bytes:
-    """Encode PIL frames with ffmpeg. Frames stream in over a pipe rather than landing as a
-    PNG sequence — a few seconds of HD would otherwise fill the container disk."""
+def _sound_to_wav(sound, sample_rate: int = 16000):
+    """Write a Cosmos `sound` tensor ([C, N]) to a temp WAV, or return None.
+
+    Cosmos 3 is an OMNI model: it generates a soundtrack alongside the video. Dropping it
+    would throw away half of what the model produced, and it is the reason this lane can
+    answer "video with audio" without MiniMax's territory restrictions."""
+    try:
+        import numpy as np
+        import wave
+        a = sound.detach().float().cpu().numpy() if hasattr(sound, "detach") else np.asarray(sound)
+        if a.ndim == 1:
+            a = a[None, :]
+        ch, _ = a.shape
+        a = np.clip(a, -1.0, 1.0)
+        pcm = (a * 32767.0).astype("<i2").T.tobytes()   # interleave to [N, C]
+        path = os.path.join(tempfile.gettempdir(), f"a{int(time.time()*1000)}.wav")
+        with wave.open(path, "wb") as w:
+            w.setnchannels(ch)
+            w.setsampwidth(2)
+            w.setframerate(sample_rate)
+            w.writeframes(pcm)
+        return path
+    except Exception as e:
+        print(f"[warn] could not encode sound track: {type(e).__name__}: {e}", flush=True)
+        return None
+
+
+def _frames_to_mp4(frames, fps: int, wav_path=None) -> bytes:
+    """Encode PIL frames with ffmpeg, muxing the generated soundtrack when there is one.
+    Frames stream in over a pipe rather than landing as a PNG sequence — a few seconds of HD
+    would otherwise fill the container disk."""
     import numpy as np
     arr = [np.asarray(f.convert("RGB")) for f in frames]
     h, w = arr[0].shape[:2]
@@ -140,6 +168,12 @@ def _frames_to_mp4(frames, fps: int) -> bytes:
     cmd = [
         "ffmpeg", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24",
         "-s", f"{w}x{h}", "-r", str(fps), "-i", "pipe:0",
+    ]
+    if wav_path:
+        # -shortest so a soundtrack longer than the video does not pad the tail with a
+        # frozen final frame.
+        cmd += ["-i", wav_path, "-c:a", "aac", "-b:a", "192k", "-shortest"]
+    cmd += [
         "-c:v", "libx264", "-preset", "medium", "-crf", "18",
         "-pix_fmt", "yuv420p", "-movflags", "+faststart", out,
     ]
@@ -188,14 +222,36 @@ def handler(job):
             kwargs["generator"] = torch.Generator(device="cuda").manual_seed(seed)
 
         result = PIPE(**kwargs)
-        out_frames = getattr(result, "frames", None)
+        # Cosmos3OmniPipelineOutput exposes `video`, NOT `frames` -- the older
+        # CosmosPipelineOutput used `frames`, and reading only that returned "no frames" on a
+        # perfectly good 242-second generation. Check every known field before giving up, and
+        # say which fields DID exist if none match, so the next surprise is one log line.
+        out_frames = None
+        for _attr in ("video", "frames", "videos", "images"):
+            _v = getattr(result, _attr, None)
+            if _v is not None:
+                out_frames = _v
+                break
         if out_frames is None:
-            return {"error": "pipeline returned no frames"}
+            _fields = [k for k in dir(result) if not k.startswith("_")]
+            return {"error": "pipeline returned no video; output fields were "
+                             + ", ".join(_fields[:20])}
         if isinstance(out_frames, list) and out_frames and isinstance(out_frames[0], list):
             out_frames = out_frames[0]
 
         fps = int(job_input.get("fps", FPS))
-        mp4 = _frames_to_mp4(out_frames, fps)
+        _wav = None
+        _sound = getattr(result, "sound", None)
+        if _sound is not None:
+            _wav = _sound_to_wav(_sound)
+            if _wav:
+                print("[gen] muxing the model's generated soundtrack", flush=True)
+        mp4 = _frames_to_mp4(out_frames, fps, wav_path=_wav)
+        if _wav:
+            try:
+                os.unlink(_wav)
+            except OSError:
+                pass
         return {
             "video_url": "data:video/mp4;base64," + base64.b64encode(mp4).decode(),
             "model": MODEL_ID,
