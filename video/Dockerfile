@@ -31,6 +31,19 @@ open('/tmp/constraints.txt','w').write(''.join(f'{n}=={v}\n' for n,v in \
 # Cosmos3OmniPipeline, first shipped in diffusers v0.39.0 -- so the floor is 0.39, not 0.37.
 # (The repo names its class "Cosmos3OmniDiffusersPipeline", which no diffusers release has
 # ever exported; handler.py maps that wrong name onto the real one.)
+# cosmos_guardrail is deliberately NOT installed; the handler passes
+# enable_safety_checker=False instead. It cannot coexist with this image:
+# cosmos-guardrail 0.3.x requires transformers>=5.0.0 against the house pin of <5,
+# and 0.1.0 requires torch==2.6.0 against this base's 2.8 -- no satisfiable version
+# exists, which pip reports as ResolutionImpossible.
+#
+# Cosmos3OmniPipeline.__init__ takes `enable_safety_checker: bool = True` and only
+# constructs CosmosSafetyChecker when it is on, so False skips the import entirely.
+# safety_checker is already listed in the pipeline's _optional_components.
+#
+# This DOES disable NVIDIA's content filter. Acceptable for a lane that renders
+# first-party marketing footage from prompts we write ourselves, but it is a
+# deliberate trade recorded in DECISIONS.md rather than an oversight.
 RUN pip install --no-cache-dir -c /tmp/constraints.txt \
       "diffusers>=0.39.0" \
       "transformers>=4.50.3,<5" \
@@ -39,7 +52,6 @@ RUN pip install --no-cache-dir -c /tmp/constraints.txt \
       "sentencepiece" \
       "protobuf" \
       "imageio" \
-      "cosmos_guardrail" \
       "runpod>=1.10.1"
 
 # Fail the BUILD, not a billing GPU, if torch was swapped or the pipeline class is absent.

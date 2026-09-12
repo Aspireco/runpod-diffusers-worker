@@ -83,11 +83,24 @@ else:
     print(f"[boot] model declares {_declared!r} -> loading {_wanted!r} "
           f"(diffusers {diffusers.__version__})", flush=True)
 
-PIPE = _cls.from_pretrained(
-    _snapshot,
-    torch_dtype=torch.bfloat16,
-    local_files_only=True,
-)
+# enable_safety_checker=False is REQUIRED here, not a preference. Cosmos3OmniPipeline
+# constructs CosmosSafetyChecker unless told not to, and that class lives in the
+# cosmos_guardrail package -- which cannot be installed alongside this image at all
+# (0.3.x wants transformers>=5, 0.1.0 wants torch==2.6.0; the base has transformers<5 and
+# torch 2.8, so pip returns ResolutionImpossible). Passing False skips the import.
+# The kwarg only exists on the Cosmos pipelines, so it is applied conditionally to keep
+# MODEL_ID swappable.
+import inspect as _inspect  # noqa: E402
+_kw = {"torch_dtype": torch.bfloat16, "local_files_only": True}
+try:
+    if "enable_safety_checker" in _inspect.signature(_cls.__init__).parameters:
+        _kw["enable_safety_checker"] = False
+        print("[boot] safety checker disabled (cosmos_guardrail is uninstallable here)",
+              flush=True)
+except (TypeError, ValueError):
+    pass
+
+PIPE = _cls.from_pretrained(_snapshot, **_kw)
 # Video models are far larger than image ones relative to the card; offloading streams
 # submodules instead of holding the whole graph resident, which is the difference between
 # running on a 48GB card and OOMing during weight load.

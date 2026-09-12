@@ -47,10 +47,15 @@ open('/tmp/constraints.txt','w').write(''.join(f'{n}=={v}\n' for n,v in \
 # older one and fails at runtime with "Could not import module 'LlamaModel'" because its
 # lazy import shim can't resolve the class against the newer API. Let chatterbox choose;
 # torch stays pinned by the constraints file, which is the dependency that breaks CUDA.
+# huggingface-hub is deliberately NOT pinned. The rebase to torch 2.6.0 worked and
+# chatterbox 0.1.7 installed cleanly WITH transformers 5.2.0 and huggingface-hub
+# 1.31.0 -- then a stale `huggingface-hub<1.0` pin here DOWNGRADED it to 0.36.2 and
+# broke transformers 5.x, which imports is_offline_mode from the newer hub API:
+#   ImportError: cannot import name 'is_offline_mode' from 'huggingface_hub'
+# The pin was protecting against an older breakage and is now the cause of one.
 RUN pip install --no-cache-dir -c /tmp/constraints.txt --only-binary=numpy \
       "chatterbox-tts" "accelerate" \
     && pip install --no-cache-dir -c /tmp/constraints.txt \
-      "huggingface-hub<1.0" \
       "runpod>=1.10.1"
 
 # Fail the BUILD, not a billing GPU, if torch was swapped or the import that broke at
