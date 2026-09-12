@@ -213,17 +213,25 @@ class Graph:
             if node.get("mode", 0) in (2, 4):
                 continue  # muted/bypassed: never emitted, callers reach through it
 
-            # Which inputs are sockets is taken from the UI node itself, not guessed
-            # from the type name. The editor lists exactly the socket inputs in
-            # `inputs`; everything else in the schema is a widget and has a positional
-            # entry in `widgets_values`.
+            # DOES THIS INPUT OCCUPY A POSITIONAL SLOT IN widgets_values?
             #
-            # Guessing from the type is not good enough, and Save3DAdvanced is the
-            # proof: its `viewport_state` is a LOAD_3D, which looks like a custom socket
-            # type but the frontend renders as a widget and serialises into
-            # widgets_values. Treat it as a socket and filename_prefix, width and height
-            # all shift by one -- width would receive the empty string. Same class of
-            # silent corruption as the control_after_generate slot below.
+            # Neither "is it a widget type" nor "is it listed as a socket" answers this
+            # alone. Both real nodes in this template disprove the simple rules:
+            #
+            #   UnwrapMesh   `resolution` is an INT wired from a PrimitiveInt. It is a
+            #                socket (it appears in `inputs`, with a link) AND it still
+            #                holds its slot in widgets_values -- the editor keeps the
+            #                placeholder for a widget that was converted to an input.
+            #                Skip it and `padding` receives 2048 and `weld_distance`
+            #                receives 1.
+            #   Save3DAdvanced  `viewport_state` is a LOAD_3D. Not a widget type by any
+            #                reasonable reading, not listed among the sockets, and it
+            #                occupies a slot. Skip it and `width` receives "".
+            #
+            # So: a slot is held by anything the editor could render as a widget (a
+            # widget-typed input, even when currently linked) OR anything the schema
+            # declares that the editor did not list as a socket. A link, when present,
+            # then overrides the value -- but the slot is consumed either way.
             sockets = {i["name"] for i in (node.get("inputs") or [])}
             linked = {i["name"]: i["link"] for i in (node.get("inputs") or []) if i.get("link") is not None}
             wv = list(node.get("widgets_values") or [])
@@ -232,6 +240,21 @@ class Graph:
             starved = []
 
             for name, typ, opts in input_spec(cls):
+                holds_slot = is_widget(typ, opts) or name not in sockets
+                value, got = None, False
+                if holds_slot:
+                    if wi < len(wv):
+                        value, got = wv[wi], True
+                        wi += 1
+                        # The seed's companion "fixed"/"randomize" slot. Skipping this
+                        # is the most damaging bug possible here: every later widget
+                        # shifts by one and the graph still runs, producing wrong output
+                        # at full GPU cost with no error.
+                        if opts.get("control_after_generate") and wi < len(wv) and isinstance(wv[wi], str):
+                            wi += 1
+                    else:
+                        starved.append(name)
+
                 if name in linked:
                     src = self.resolve(linked[name])
                     if src is None:
@@ -240,23 +263,8 @@ class Graph:
                             "(muted node with nothing upstream?)"
                         )
                     inputs[name] = [str(src[0]), src[1]]
-                    continue
-                if name in sockets:
-                    continue  # a socket the template left unconnected
-                if wi >= len(wv):
-                    # The editor serialises EVERY widget, defaults included, so running
-                    # out of values means the schema has an input the editor did not
-                    # treat as a widget and did not list as a socket either -- which
-                    # means something earlier consumed the wrong slot.
-                    starved.append(name)
-                    continue
-                inputs[name] = wv[wi]
-                wi += 1
-                # The seed's companion "fixed"/"randomize" slot. Skipping this is the
-                # single most damaging bug possible here: every later widget shifts by
-                # one and the graph runs anyway, producing wrong output at full cost.
-                if opts.get("control_after_generate") and wi < len(wv) and isinstance(wv[wi], str):
-                    wi += 1
+                elif got:
+                    inputs[name] = value
 
             # Leftover widget values mean the schema and the serialised list disagree,
             # i.e. something shifted. Fail the BUILD rather than emit a graph whose

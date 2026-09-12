@@ -14,8 +14,9 @@ Model comparison and licences: [`stack-docs/3D-BENCHMARK.md`](../../stack-docs/3
     "workflow": "trellis2_image_to_mesh",
     "image": "<base64 PNG or JPEG>",
     "seed": 42,
-    "texture_size": 2048,
-    "target_faces": 700000
+    "texture_size": 4096,
+    "target_faces": 700000,
+    "remesh_resolution": 768
   }
 }
 ```
@@ -38,6 +39,11 @@ AO + normal). `meshes[1]`, when present, is the vertex-coloured variant — the 
 when UV unwrapping produces a poor atlas on a thin object like a shelf bracket.
 
 Errors come back as `{"error": "<Type>: <message>"}` rather than a raised exception.
+
+`texture_size` drives the single `PrimitiveInt` that feeds both `UnwrapMesh.resolution`
+and `BakeTextureFromVoxel.texture_size`, so the UV atlas and the bake cannot disagree.
+Setting `UnwrapMesh.resolution` directly would be overwritten by that link and silently
+do nothing.
 
 Easiest client is [`threed-pipeline/mesh_from_image.py`](../../threed-pipeline/mesh_from_image.py).
 

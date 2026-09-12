@@ -123,16 +123,33 @@ def patch(wf, image_name, params):
             # degrades the texture stage.
             n["inputs"]["seed"] = int(seed) + i
 
+    # Input names verified against ComfyUI 0.34.0's own schemas, not guessed:
+    # DecimateMesh takes `target_face_count` (not `target`), RemeshMesh takes
+    # `resolution`.
     for cls, key, val in (
-        ("VoxelToMesh", "threshold", params.get("voxel_threshold")),
-        ("DecimateMesh", "target", params.get("target_faces")),
-        ("UnwrapMesh", "resolution", params.get("texture_size")),
+        ("DecimateMesh", "target_face_count", params.get("target_faces")),
+        ("RemeshMesh", "resolution", params.get("remesh_resolution")),
     ):
         if val is None:
             continue
         for n in wf.values():
             if n["class_type"] == cls and key in n["inputs"]:
-                n["inputs"][key] = val
+                n["inputs"][key] = int(val)
+
+    # Texture size is NOT set on UnwrapMesh. In the vendor graph
+    # UnwrapMesh.resolution is *wired* from a PrimitiveInt, which also feeds
+    # BakeTextureFromVoxel.texture_size -- one knob driving both, so the atlas and the
+    # bake can never disagree. Writing to UnwrapMesh.resolution would be overwritten by
+    # the link and silently do nothing.
+    tex = params.get("texture_size")
+    if tex is not None:
+        prims = [n for n in wf.values() if n["class_type"] == "PrimitiveInt" and "value" in n["inputs"]]
+        if len(prims) != 1:
+            raise RuntimeError(
+                f"expected exactly one PrimitiveInt driving texture size, found {len(prims)}; "
+                "refusing to guess which one texture_size means"
+            )
+        prims[0]["inputs"]["value"] = int(tex)
 
     # The SaveGLB terminals are attached at build time by build_api_workflows.py, not
     # here -- adding nodes at request time would mean a graph shape that was never
