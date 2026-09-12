@@ -10,6 +10,11 @@ ENV PYTHONUNBUFFERED=1 \
 # Shadow the apt-installed cryptography pip cannot uninstall.
 RUN pip install --no-cache-dir --ignore-installed cryptography
 
+# One of chatterbox's transitive deps still ships a legacy setup.py that calls
+# pkgutil.ImpImporter, removed in Python 3.12 -- the build dies with
+# "module 'pkgutil' has no attribute 'ImpImporter'" unless setuptools is current.
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+
 # torch is left exactly as the base image ships it — reinstalling pulls CUDA 13 wheels
 # needing driver >= 580 while Runpod hosts run 570/575, and CUDA init dies with no logs.
 RUN pip install --no-cache-dir \

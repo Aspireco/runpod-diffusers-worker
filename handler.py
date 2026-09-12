@@ -22,12 +22,19 @@ CACHE_ROOT = os.environ.get("HF_CACHE_ROOT", "/runpod-volume/huggingface-cache/h
 
 # Per-model sampling defaults. Turbo-class models are distilled to a handful of steps and
 # expect guidance disabled -- running them at SDXL's 25 steps/CFG 7 produces mush.
+# `offload` keeps only the active submodule resident on the GPU: Qwen-Image is 20B, which
+# at bf16 needs more than a 48GB card once the text encoder and VAE are alongside it, and
+# a straight .to("cuda") OOMs during weight load.
 DEFAULTS = {
     "Tongyi-MAI/Z-Image-Turbo": {"steps": 8, "guidance": 0.0, "size": (1024, 1024)},
     "black-forest-labs/FLUX.2-klein-4B": {"steps": 4, "guidance": 0.0, "size": (1024, 1024)},
-    "Qwen/Qwen-Image-2512": {"steps": 28, "guidance": 4.0, "size": (1328, 1328)},
+    "Qwen/Qwen-Image-2512": {"steps": 28, "guidance": 4.0, "size": (1328, 1328), "offload": True},
 }
 CFG = DEFAULTS.get(MODEL_ID, {"steps": 20, "guidance": 3.5, "size": (1024, 1024)})
+
+# Env var wins, so a lane can be switched to offload without a rebuild.
+_env_offload = os.environ.get("CPU_OFFLOAD")
+OFFLOAD = (_env_offload == "1") if _env_offload is not None else bool(CFG.get("offload"))
 
 
 def find_snapshot(model_id: str) -> str:
@@ -61,7 +68,13 @@ PIPE = DiffusionPipeline.from_pretrained(
     torch_dtype=torch.bfloat16,
     local_files_only=True,
 )
-PIPE.to("cuda")
+if OFFLOAD:
+    # Streams submodules on and off the GPU as the pipeline runs. Slower per image, but it
+    # is the difference between running on a 48GB card and OOMing during load.
+    PIPE.enable_model_cpu_offload()
+    print("[boot] cpu offload enabled", flush=True)
+else:
+    PIPE.to("cuda")
 try:
     PIPE.set_progress_bar_config(disable=True)
 except Exception:
