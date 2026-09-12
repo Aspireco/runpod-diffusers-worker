@@ -205,17 +205,23 @@ def handler(job):
         speaker = _fetch_speaker(job_input)
         language = job_input.get("language", "en")
 
-        out = MODEL.synthesize(
-            text,
-            _config,
-            speaker_wav=speaker,
-            language=language,
-            temperature=float(job_input.get("temperature", 0.65)),
-            length_penalty=float(job_input.get("length_penalty", 1.0)),
-            repetition_penalty=float(job_input.get("repetition_penalty", 2.0)),
-            top_k=int(job_input.get("top_k", 50)),
-            top_p=float(job_input.get("top_p", 0.85)),
-        )
+        # Pass ONLY what the caller explicitly set, so the model runs on its own tuned
+        # defaults otherwise. An earlier version hardcoded temperature=0.65 and
+        # repetition_penalty=2.0 against library defaults of 0.75 and 10.0 -- invented
+        # numbers that would have quietly degraded output and biased the Tier 1 / Tier 2
+        # benchmark AGAINST this model. In a measurement rig, "sensible-looking default"
+        # is a thumb on the scale.
+        tune = {}
+        for name, cast in (("temperature", float), ("length_penalty", float),
+                           ("repetition_penalty", float), ("top_k", int),
+                           ("top_p", float), ("speed", float),
+                           ("enable_text_splitting", bool)):
+            if name in job_input:
+                tune[name] = cast(job_input[name])
+
+        # `config` is accepted positionally but deprecated in coqui-tts 0.27.5 (it warns and
+        # ignores it); the checkpoint load below is what actually needs it.
+        out = MODEL.synthesize(text, speaker_wav=speaker, language=language, **tune)
         wav = out["wav"] if isinstance(out, dict) else out
 
         tag = build_tag({
