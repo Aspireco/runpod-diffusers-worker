@@ -29,7 +29,13 @@
 #   * Park it at --workers-max 0 the moment the shootout is done. Idle workers bill.
 FROM runpod/worker-comfyui:5.10.0-base
 
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg sox espeak-ng git \
+# build-essential is here and NOT in the sibling images on purpose. Across 19 engines'
+# dependencies at least one has no wheel for this Python, and the base image ships no
+# compiler -- the first build died on `No such file or directory: 'x86_64-linux-gnu-g++'`
+# inside a wheel build. The production lanes stay compiler-free (a compiler in a
+# serverless image is image size and attack surface for nothing); this rig earns it.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ffmpeg sox espeak-ng git build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 # Pin the base image's torch BEFORE the suite installs anything. The suite declares 19
@@ -65,6 +71,17 @@ RUN NODE_DIR="$(find /comfyui/custom_nodes -maxdepth 1 -iname '*tts*audio*suite*
          pip install --no-cache-dir -c /constraints.txt --prefer-binary \
            -r "$NODE_DIR/requirements.txt" || true ; \
        else echo "no requirements.txt shipped with the pack" ; fi
+
+# The pack's own requirements.txt did not install: comfy-node-install's cm_cli choked on
+# it with `Failed to parse: numpy>=1.26.4,<2.3.0  # Compatible with both numpy ...` --
+# an inline comment after a version spec that its parser cannot handle. So nothing from
+# that file landed, and the boot check then failed on missing librosa and soundfile.
+# pip's own parser handles the file fine, which is why the -r install above is the
+# fallback; these are the module-scope imports named in the failure, pinned belt-and-
+# braces so a silently-skipped requirements file cannot take the image down again.
+RUN pip install --no-cache-dir -c /constraints.txt --prefer-binary \
+      librosa soundfile audio-separator \
+    && python -c "import librosa, soundfile; print('bench audio deps OK')"
 
 # Assert torch survived. Placed after BOTH install steps above -- either could have replaced
 # it -- so a failure here names the culprit instead of surfacing as a silent GPU crash-loop.
