@@ -365,6 +365,49 @@ def convert(ui_path, out_path, keep_ids, node_defs):
     return api
 
 
+MODEL_SUFFIXES = (".safetensors", ".ckpt", ".pth", ".pt", ".bin", ".onnx")
+
+
+def verify_models(api, models_root="/comfyui/models"):
+    """Assert every model filename the graph asks for is actually on disk.
+
+    ComfyUI's `--quick-test-for-ci` boot registers nodes but does not load weights, so
+    a loader pointing at a filename that was never downloaded passes every other check
+    in this build and fails on a GPU that bills by the second.
+
+    This is not hypothetical here. The template's CLIPVisionLoader wants
+    `dino_v3_L_naf_fp32.safetensors`, which lives in Comfy-Org/Pixal3D -- while
+    Comfy-Org/TRELLIS.2, the obvious place to look, ships a differently-named
+    `dino_v3_vit_l.safetensors`. Downloading the wrong one is a one-word mistake that
+    this check turns into a build failure.
+    """
+    if not os.path.isdir(models_root):
+        print(f"[build] {models_root} absent, skipping model presence check")
+        return
+
+    on_disk = {}
+    for dirpath, _dirs, files in os.walk(models_root):
+        for f in files:
+            on_disk.setdefault(f, os.path.join(dirpath, f))
+
+    wanted, missing = set(), []
+    for nid, node in api.items():
+        for name, val in node["inputs"].items():
+            if isinstance(val, str) and val.lower().endswith(MODEL_SUFFIXES):
+                wanted.add(val)
+                if val not in on_disk:
+                    missing.append(f"{node['class_type']}#{nid}.{name} -> {val}")
+
+    if missing:
+        raise SystemExit(
+            "the graph references model files that are not in the image:\n  - "
+            + "\n  - ".join(missing)
+            + f"\npresent under {models_root}:\n  "
+            + "\n  ".join(sorted(on_disk)) or "(none)"
+        )
+    print(f"[build] all {len(wanted)} referenced model files present: {sorted(wanted)}")
+
+
 def add_save_glb(api, source_ids, prefix="3d/mos"):
     """Terminate the graph with SaveGLB nodes of our own.
 
@@ -435,6 +478,8 @@ def main():
     if len(ks) < 3:
         raise SystemExit(f"expected >=3 KSamplers on the TRELLIS.2 path, found {len(ks)}")
     print(f"[build] sanity OK: {len(api)} nodes, {len(ks)} KSamplers, LoadImage + SaveGLB present")
+
+    verify_models(api)
 
 
 if __name__ == "__main__":
