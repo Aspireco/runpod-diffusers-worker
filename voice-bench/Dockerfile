@@ -134,7 +134,16 @@ import comfy.options
 comfy.options.enable_args_parsing()
 print("[boot] importing nodes", flush=True)
 import nodes
-nodes.init_extra_nodes(init_custom_nodes=True)
+# init_extra_nodes is `async def` in current ComfyUI (main.py does
+# asyncio_loop.run_until_complete on it). Calling it bare returns a coroutine and
+# registers NOTHING -- silently. That is how this check reported 'nodes missing'
+# while the step above it logged 'VibeVoice nodes registered successfully': the node
+# was fine, the check was asserting against an empty registry it never populated.
+# inspect.isawaitable keeps this working if a future base pins a sync version.
+import asyncio, inspect
+_res = nodes.init_extra_nodes(init_custom_nodes=True)
+if inspect.isawaitable(_res):
+    asyncio.run(_res)
 have = sorted(nodes.NODE_CLASS_MAPPINGS)
 suite = [n for n in have if "tts" in n.lower() or "voice" in n.lower() or "rvc" in n.lower()]
 assert len(suite) >= 5, f"tts_audio_suite barely registered. got: {suite}"
