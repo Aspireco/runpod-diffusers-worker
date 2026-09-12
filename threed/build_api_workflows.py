@@ -63,6 +63,9 @@ WIDGET_TYPES = {"INT", "FLOAT", "STRING", "BOOLEAN", "COMBO"}
 # input, and therefore serialises an extra positional value that the schema does not
 # mention. Discovered the hard way, one build at a time; the leftover-value assertion
 # in to_api() is what surfaces a new one rather than letting it corrupt the mapping.
+# Which of the two pipelines the vendor template carries. See select_pipeline().
+USE_TRELLIS2 = True
+
 COMPANION_WIDGET_OPTS = ("control_after_generate", "image_upload", "video_upload",
                          "audio_upload", "animated_image_upload", "model_upload")
 
@@ -214,6 +217,25 @@ class Graph:
             else:
                 self.links[l[0]] = (l[1], l[2])
 
+    def switch_value(self, node):
+        """The boolean an If/Else switch is set to: a literal widget, or a primitive.
+
+        The template drives three switches from one PrimitiveBoolean, so `switch` is a
+        LINKED input on those and its widgets_values entry is the stale placeholder a
+        converted widget leaves behind. Read the primitive in that case.
+        """
+        sw = next((i for i in (node.get("inputs") or []) if i.get("name") == "switch"), None)
+        if sw is not None and sw.get("link") is not None:
+            origin = self.links.get(sw["link"])
+            if origin:
+                src = self.nodes.get(origin[0])
+                wv = (src or {}).get("widgets_values") or []
+                if wv:
+                    return bool(wv[0])
+            return None
+        wv = node.get("widgets_values") or []
+        return bool(wv[0]) if wv else None
+
     def resolve(self, link_id, _seen=None):
         """Follow a link back to a node that can actually be an API source.
 
@@ -233,6 +255,25 @@ class Graph:
         node = self.nodes.get(nid)
         if node is None:
             return None
+
+        # An If/Else switch is resolved HERE, at build time, rather than left in the
+        # graph. Its branches are declared lazy=True, so ComfyUI would only execute the
+        # selected one -- but /prompt still VALIDATES the whole graph, so an unselected
+        # UNETLoader whose checkpoint is absent gets the prompt rejected outright.
+        # Resolving the switch prunes the dead branch along with everything only it
+        # feeds, which is what keeps a second 5GB checkpoint out of the image.
+        if node["type"] == "ComfySwitchNode":
+            val = self.switch_value(node)
+            if val is None:
+                raise SystemExit(
+                    f"ComfySwitchNode#{nid}: cannot determine its boolean at build time; "
+                    "it is neither a literal widget nor driven by a primitive"
+                )
+            want = "on_true" if val else "on_false"
+            tgt = next((i for i in (node.get("inputs") or []) if i.get("name") == want), None)
+            if tgt is None or tgt.get("link") is None:
+                raise SystemExit(f"ComfySwitchNode#{nid}: selected branch {want!r} is not connected")
+            return self.resolve(tgt["link"], _seen)
 
         cls = self.defs.get(node["type"])
         mode = node.get("mode", 0)
@@ -398,6 +439,50 @@ class Graph:
 SUBGRAPH_TYPE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 
+def select_pipeline(ui, use_trellis2=True):
+    """Set the template's pipeline switch before conversion.
+
+    THIS IS NOT COSMETIC. ComfyUI ships this workflow as "Pixal3D & TRELLIS.2: Image to
+    Model", and the PrimitiveBoolean driving its three If/Else switches -- titled
+    "Boolean (Switch to Trellis2)" -- ships set to **False**. Straight out of the box the
+    template runs the PIXAL3D pipeline, loading pixal3d_int8_convrot.safetensors, not
+    TRELLIS.2 at all.
+
+    Both are MIT (Pixal3D is TencentARC's), so either is usable. TRELLIS.2 is the
+    documented pick for this lane, so the choice is made explicitly here rather than
+    inherited from whatever the vendor happened to save. Flipping this to False and
+    downloading the Pixal3D checkpoint is the whole of switching pipelines.
+    """
+    nodes = {n["id"]: n for n in ui.get("nodes", [])}
+    links = {}
+    for l in ui.get("links") or []:
+        links[l["id"] if isinstance(l, dict) else l[0]] = (
+            (l["origin_id"], l["origin_slot"]) if isinstance(l, dict) else (l[1], l[2]))
+
+    driven = set()
+    for n in ui.get("nodes", []):
+        if n.get("type") != "ComfySwitchNode":
+            continue
+        sw = next((i for i in (n.get("inputs") or []) if i.get("name") == "switch"), None)
+        if sw and sw.get("link") is not None:
+            origin = links.get(sw["link"])
+            if origin:
+                driven.add(origin[0])
+
+    if not driven:
+        print("[build] no primitive-driven pipeline switch found; template default stands")
+        return
+    for nid in sorted(driven):
+        node = nodes.get(nid)
+        if node is None:
+            continue
+        before = (node.get("widgets_values") or [None])[0]
+        node["widgets_values"] = [bool(use_trellis2)]
+        print(f"[build] pipeline switch #{nid} ({node.get('title', '')!r}): "
+              f"{before} -> {bool(use_trellis2)} "
+              f"({'TRELLIS.2' if use_trellis2 else 'Pixal3D'})")
+
+
 def convert(ui_path, out_path, keep_ids, node_defs):
     with open(ui_path, encoding="utf-8") as fh:
         ui = json.load(fh)
@@ -416,6 +501,8 @@ def convert(ui_path, out_path, keep_ids, node_defs):
             "template in the ComfyUI editor (right-click the subgraph -> Unpack) and "
             "re-export before converting."
         )
+
+    select_pipeline(ui, use_trellis2=USE_TRELLIS2)
 
     g = Graph(ui, node_defs)
 
@@ -550,6 +637,16 @@ def main():
     for required in ("LoadImage", "SaveGLB", "ApplyTextureToMesh", "UnwrapMesh"):
         if required not in classes:
             raise SystemExit(f"expected a {required} node to survive pruning; got {sorted(classes)}")
+    # The template ships set to Pixal3D, so a refreshed template that silently flips
+    # back would otherwise be caught only by a 5GB download failing. Name it here.
+    other = sorted({v for n in api.values() for v in n["inputs"].values()
+                    if isinstance(v, str) and "pixal3d" in v.lower()})
+    if USE_TRELLIS2 and other:
+        raise SystemExit(
+            f"pipeline is set to TRELLIS.2 but the graph still references {other} -- "
+            "the switch resolution did not prune the Pixal3D branch"
+        )
+
     ks = [nid for nid, n in api.items() if n["class_type"] == "KSampler"]
     if len(ks) < 3:
         raise SystemExit(f"expected >=3 KSamplers on the TRELLIS.2 path, found {len(ks)}")
