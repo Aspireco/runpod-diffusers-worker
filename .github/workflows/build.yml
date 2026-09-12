@@ -36,6 +36,11 @@ jobs:
             image: runpod-video-worker
           - context: comfy
             image: runpod-comfy-worker
+          # TIER 2 CALIBRATION ONLY -- non-commercial weights, never published.
+          # The image name carries the tier so it cannot be pulled into a production
+          # lane by someone skimming the registry.
+          - context: tier2-voice
+            image: runpod-tier2-voice-worker
     steps:
       - uses: actions/checkout@v4
 
