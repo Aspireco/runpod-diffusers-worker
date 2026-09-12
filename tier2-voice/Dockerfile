@@ -21,9 +21,19 @@
 # before anyone inspects a single asset.
 FROM runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404
 
+# HF_HUB_ENABLE_HF_TRANSFER=0 is load-bearing, not tidying. The base image ships it set to
+# 1, and pinning huggingface-hub<1.0 below resolves an environment where the hf_transfer
+# package is absent. The hub then RAISES instead of falling back to plain HTTP, which killed
+# the weights download in half a second. Turned off rather than installing hf_transfer: one
+# dependency fewer beats a marginally faster one-time 1.8GB pull.
+#
+# COQUI_TOS_AGREED=0 is also deliberate. Setting it to 1 is how the TTS library auto-accepts
+# CPML on your behalf, and this worker must never accept a licence implicitly -- the weights
+# are fetched directly below, from an ungated repo, with the licence text shipped alongside.
 ENV TIER2_ENDPOINT_NAME="t2-xtts-v2" \
     XTTS_DIR="/models/xtts-v2" \
     HF_HUB_DISABLE_TELEMETRY=1 \
+    HF_HUB_ENABLE_HF_TRANSFER=0 \
     PYTHONUNBUFFERED=1 \
     COQUI_TOS_AGREED=0
 
