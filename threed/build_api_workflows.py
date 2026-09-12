@@ -48,7 +48,19 @@ WIDGET_TYPES = {"INT", "FLOAT", "STRING", "BOOLEAN", "COMBO"}
 
 
 def load_node_defs():
-    """Return ComfyUI's NODE_CLASS_MAPPINGS with all extras registered."""
+    """Return ComfyUI's NODE_CLASS_MAPPINGS with all extras registered.
+
+    `--cpu` is injected into sys.argv before the import, and it is not optional.
+    ComfyUI parses argv in comfy.cli_args at import time, and comfy/model_management.py
+    then runs `total_vram = get_total_memory(get_torch_device())` at MODULE level --
+    `torch.cuda.current_device()` on a GitHub runner with no GPU, which raises
+    "Found no NVIDIA driver" before a single node is registered. The base image's own
+    smoke test passes --cpu for exactly this reason.
+
+    Our real arguments were consumed by main() before this runs, so overwriting argv
+    here is safe.
+    """
+    sys.argv = [sys.argv[0], "--cpu"]
     import nodes
 
     init = getattr(nodes, "init_extra_nodes", None)
@@ -177,6 +189,18 @@ class Graph:
             if node.get("mode", 0) in (2, 4):
                 continue  # muted/bypassed: never emitted, callers reach through it
 
+            # Which inputs are sockets is taken from the UI node itself, not guessed
+            # from the type name. The editor lists exactly the socket inputs in
+            # `inputs`; everything else in the schema is a widget and has a positional
+            # entry in `widgets_values`.
+            #
+            # Guessing from the type is not good enough, and Save3DAdvanced is the
+            # proof: its `viewport_state` is a LOAD_3D, which looks like a custom socket
+            # type but the frontend renders as a widget and serialises into
+            # widgets_values. Treat it as a socket and filename_prefix, width and height
+            # all shift by one -- width would receive the empty string. Same class of
+            # silent corruption as the control_after_generate slot below.
+            sockets = {i["name"] for i in (node.get("inputs") or [])}
             linked = {i["name"]: i["link"] for i in (node.get("inputs") or []) if i.get("link") is not None}
             wv = list(node.get("widgets_values") or [])
             wi = 0
@@ -192,8 +216,8 @@ class Graph:
                         )
                     inputs[name] = [str(src[0]), src[1]]
                     continue
-                if not is_widget(typ, opts):
-                    continue
+                if name in sockets:
+                    continue  # a socket the template left unconnected
                 if wi >= len(wv):
                     continue  # optional widget the template left at its default
                 inputs[name] = wv[wi]
@@ -203,6 +227,16 @@ class Graph:
                 # one and the graph runs anyway, producing wrong output at full cost.
                 if opts.get("control_after_generate") and wi < len(wv) and isinstance(wv[wi], str):
                     wi += 1
+
+            # Leftover widget values mean the schema and the serialised list disagree,
+            # i.e. something shifted. Fail the BUILD rather than emit a graph whose
+            # parameters are quietly wrong.
+            if wi != len(wv):
+                raise SystemExit(
+                    f"{ntype}#{nid}: consumed {wi} of {len(wv)} widget values "
+                    f"({wv!r}) -- schema and template disagree, so later inputs would "
+                    f"be misaligned. Mapped: {json.dumps(inputs)[:300]}"
+                )
 
             api[str(nid)] = {"class_type": ntype, "inputs": inputs, "_meta": {"title": node.get("title", ntype)}}
         return api
@@ -235,15 +269,43 @@ def convert(ui_path, out_path, keep_ids, node_defs):
     return api
 
 
+def add_save_glb(api, source_ids, prefix="3d/mos"):
+    """Terminate the graph with SaveGLB nodes of our own.
+
+    The template ends in Save3DAdvanced, which is deliberately NOT kept: its
+    `viewport_state` input is an editor-side widget of a custom type, exactly the shape
+    that makes widget alignment ambiguous, and it carries a viewport payload we have no
+    use for headless. SaveGLB takes a mesh or a File3D plus a filename prefix and
+    nothing else, so there is nothing to misalign.
+
+    MeshToFile3D outputs File3DGLB, which is in SaveGLB's accepted MultiType list.
+    """
+    added = []
+    for i, src in enumerate(source_ids):
+        if str(src) not in api:
+            raise SystemExit(f"cannot attach SaveGLB: node {src} was pruned")
+        nid = str(9001 + i)
+        api[nid] = {
+            "class_type": "SaveGLB",
+            "inputs": {"mesh": [str(src), 0], "filename_prefix": f"{prefix}_{i}"},
+            "_meta": {"title": f"mos SaveGLB {i}"},
+        }
+        added.append(nid)
+    return added
+
+
 def main():
+    # Single-template mode, used by the quarantined Hunyuan3D image:
+    #   python build_api_workflows.py <in.ui.json> <out.api.json> <keep_id,keep_id,...>
+    # Arguments are read BEFORE load_node_defs(), which overwrites sys.argv with --cpu.
+    single = sys.argv[1:4] if len(sys.argv) == 4 else None
+
     defs = load_node_defs()
     print(f"[build] ComfyUI exposes {len(defs)} node types")
 
-    # Single-template mode, used by the quarantined Hunyuan3D image:
-    #   python build_api_workflows.py <in.ui.json> <out.api.json> <keep_id,keep_id,...>
-    if len(sys.argv) == 4:
-        keep = [int(x) for x in sys.argv[3].split(",") if x.strip()]
-        convert(sys.argv[1], sys.argv[2], keep, defs)
+    if single:
+        keep = [int(x) for x in single[2].split(",") if x.strip()]
+        convert(single[0], single[1], keep, defs)
         return
 
     # Explicit, not derived from __file__: the script is copied to / in the image while
@@ -253,31 +315,30 @@ def main():
     if not os.path.isdir(wf):
         raise SystemExit(f"workflow dir {wf!r} does not exist")
 
-    jobs = [
-        # 322 Save3DAdvanced <- MeshToFile3D(285) <- MeshSmoothNormals(260)
-        #     <- ApplyTextureToMesh(210): the full PBR mesh. That is the deliverable.
-        # 282 MeshToFile3D <- PaintMesh(252) is the vertex-coloured mesh -- kept because
-        #     it costs nothing extra (same upstream) and is the fallback when UV
-        #     unwrapping produces a poor atlas on a thin object like a shelf bracket.
-        ("trellis2_image_to_mesh.ui.json", "trellis2_image_to_mesh.api.json", [322, 282]),
-    ]
-    built = {}
-    for src, dst, keep in jobs:
-        built[dst] = convert(os.path.join(wf, src), os.path.join(wf, dst), keep, defs)
+    # 285 MeshToFile3D <- MeshSmoothNormals(260) <- ApplyTextureToMesh(210): the full
+    #     PBR mesh, and the deliverable.
+    # 282 MeshToFile3D <- PaintMesh(252): the vertex-coloured mesh. Kept because it
+    #     shares all its upstream with 285 and so costs nothing extra, and it is the
+    #     fallback when UV unwrapping produces a poor atlas on a thin object.
+    src = os.path.join(wf, "trellis2_image_to_mesh.ui.json")
+    dst = os.path.join(wf, "trellis2_image_to_mesh.api.json")
+    api = convert(src, dst, [285, 282], defs)
 
-    # Assert the nodes the handler patches by class actually survived pruning --
-    # otherwise the handler would silently fail to inject the input image.
-    api = built["trellis2_image_to_mesh.api.json"]
+    saves = add_save_glb(api, [285, 282])
+    with open(dst, "w", encoding="utf-8") as fh:
+        json.dump(api, fh, indent=1)
+    print(f"[build] attached SaveGLB nodes {saves}")
+
+    # Assert what the handler relies on. The handler patches by class_type, so a class
+    # silently pruned here would mean an input image that is never injected.
     classes = {n["class_type"] for n in api.values()}
-    for required in ("LoadImage", "SaveGLB", "Save3DAdvanced"):
-        if required == "SaveGLB":
-            continue  # added by the handler, not present in the template
+    for required in ("LoadImage", "SaveGLB", "ApplyTextureToMesh", "UnwrapMesh"):
         if required not in classes:
             raise SystemExit(f"expected a {required} node to survive pruning; got {sorted(classes)}")
     ks = [nid for nid, n in api.items() if n["class_type"] == "KSampler"]
     if len(ks) < 3:
         raise SystemExit(f"expected >=3 KSamplers on the TRELLIS.2 path, found {len(ks)}")
-    print(f"[build] sanity OK: {len(ks)} KSamplers, LoadImage + Save3DAdvanced present")
+    print(f"[build] sanity OK: {len(api)} nodes, {len(ks)} KSamplers, LoadImage + SaveGLB present")
 
 
 if __name__ == "__main__":

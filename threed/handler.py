@@ -134,18 +134,11 @@ def patch(wf, image_name, params):
             if n["class_type"] == cls and key in n["inputs"]:
                 n["inputs"][key] = val
 
-    # A guaranteed, unambiguous GLB write under our own filename prefix. The template's
-    # Save3DAdvanced also saves, but its prefix and node id are the vendor's to change.
-    tail = [n for n in wf.values() if n["class_type"] == "MeshToFile3D"]
-    if tail:
-        src = [nid for nid, n in wf.items() if n["class_type"] == "Save3DAdvanced"]
-        if src:
-            mesh_link = wf[src[0]]["inputs"]["model_3d"]
-            wf["9001"] = {
-                "class_type": "SaveGLB",
-                "inputs": {"mesh": mesh_link, "filename_prefix": "3d/mos"},
-                "_meta": {"title": "mos SaveGLB"},
-            }
+    # The SaveGLB terminals are attached at build time by build_api_workflows.py, not
+    # here -- adding nodes at request time would mean a graph shape that was never
+    # validated by the build. Assert they survived instead.
+    if not any(n["class_type"] == "SaveGLB" for n in wf.values()):
+        raise RuntimeError("workflow has no SaveGLB node; nothing would be returned")
     return wf
 
 
