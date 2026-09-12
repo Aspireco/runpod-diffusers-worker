@@ -7,21 +7,12 @@ ENV PYTHONUNBUFFERED=1 \
     HF_HOME=/opt/hf \
     HF_HUB_DISABLE_TELEMETRY=1
 
-# Shadow the apt-installed cryptography pip cannot uninstall.
+# cryptography arrives via apt with no pip record, so pip cannot uninstall it for runpod's
+# dependency chain. Shadow it instead of trying to remove it.
 RUN pip install --no-cache-dir --ignore-installed cryptography
 
-# One of chatterbox's transitive deps still ships a legacy setup.py that calls
-# pkgutil.ImpImporter, removed in Python 3.12 -- the build dies with
-# "module 'pkgutil' has no attribute 'ImpImporter'" unless setuptools is current.
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# torch is left exactly as the base image ships it — reinstalling pulls CUDA 13 wheels
-# needing driver >= 580 while Runpod hosts run 570/575, and CUDA init dies with no logs.
-# Install numpy and cython up front, then build chatterbox WITHOUT build isolation.
-# Otherwise pip spins up an isolated build env, tries to compile an old pinned numpy from
-# source, and dies on "pkgutil has no attribute ImpImporter" — Python 3.12 removed it and
-# that numpy's legacy setup.py still calls it. --no-build-isolation reuses the numpy we
-# just installed as a binary wheel instead of compiling anything.
 # Pin the base image's torch so chatterbox's own torch requirement cannot pull a CUDA 13
 # wheel. Those need driver >= 580; Runpod hosts run 570/575 and CUDA init then dies before
 # a single log line, which reads as a crash-loop with no cause.
@@ -30,26 +21,26 @@ open('/tmp/constraints.txt','w').write(''.join(f'{n}=={v}\n' for n,v in \
 [('torch',torch.__version__),('torchvision',torchvision.__version__),('torchaudio',torchaudio.__version__)]))" \
     && cat /tmp/constraints.txt
 
-RUN pip install --no-cache-dir -c /tmp/constraints.txt "numpy>=1.26,<3" "cython"
-
-# Deliberately NOT pinning transformers here. The house pin is >=4.50.3, but chatterbox
-# targets an older transformers and fails on the newer one with
-#   ModuleNotFoundError: Could not import module 'LlamaModel'
-# — its lazy import shim can't resolve the class against the changed API. Let chatterbox
-# resolve its own transformers; torch stays pinned by the constraints file, which is the
-# dependency that actually breaks CUDA if it moves.
-RUN pip install --no-cache-dir --no-build-isolation -c /tmp/constraints.txt \
+# --only-binary refuses source builds entirely. Four earlier attempts died compiling from
+# source: first an old pinned numpy hitting pkgutil.ImpImporter (removed in Python 3.12),
+# then metadata-generation-failed once --no-build-isolation took away the isolated build
+# env that had been supplying those build deps. Wheels-only sidesteps both.
+#
+# transformers is deliberately NOT pinned to the house >=4.50.3 here: chatterbox targets an
+# older one and fails at runtime with "Could not import module 'LlamaModel'" because its
+# lazy import shim can't resolve the class against the newer API. Let chatterbox choose;
+# torch stays pinned by the constraints file, which is the dependency that breaks CUDA.
+RUN pip install --no-cache-dir -c /tmp/constraints.txt --only-binary=:all: \
       "chatterbox-tts" "accelerate" \
     && pip install --no-cache-dir -c /tmp/constraints.txt \
       "huggingface-hub<1.0" \
       "runpod>=1.10.1"
 
-# Fail the build if the import that just broke at runtime still breaks.
+# Fail the BUILD, not a billing GPU, if torch was swapped or the import that broke at
+# runtime last time still breaks.
+RUN python -c "import torch; v=torch.__version__; print('torch', v); assert 'cu13' not in v, f'torch replaced: {v}'"
 RUN python -c "import transformers; print('transformers', transformers.__version__); \
 from transformers import LlamaModel; print('LlamaModel import OK')"
-
-RUN python -c "import torch; v=torch.__version__; print('torch', v); \
-assert 'cu13' not in v, f'torch was replaced: {v}'"
 
 COPY handler.py /handler.py
 RUN python -c "import ast; ast.parse(open('/handler.py').read()); print('handler parses OK')"
