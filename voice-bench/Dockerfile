@@ -152,6 +152,35 @@ assert any("rvc" in n.lower() for n in have), (
     f"conversion, so this image is pointless without them. registered: {suite}")
 print(f"[boot] tts_audio_suite OK, {len(suite)} voice nodes", flush=True)
 print("[boot] sample:", suite[:25], flush=True)
+# Validate the SHIPPED WORKFLOWS against the registry we just built.
+#
+# This is the check that matters, and it was missing. The assertions above prove that
+# *some* expected nodes exist; they say nothing about whether the JSON files this image
+# actually ships reference real class names. They did not: workflows/kokoro-narration.json
+# invented a "KokoroSpeech" node that has never existed (the pack registers KokoroSpeaker
+# and KokoroGenerator), and every earlier build passed anyway. That error would have
+# surfaced as a 400 on the first real request, on a billing GPU.
+#
+# Node packs rename classes between versions, so this also turns a silent upstream rename
+# into a build failure with the old and new names side by side.
+import json, glob, os
+wf_errors = []
+for path in sorted(glob.glob("/workflows/*.json")):
+    graph = json.load(open(path))
+    for node_id, node in graph.items():
+        if node_id.startswith("_") or not isinstance(node, dict):
+            continue                      # _comment / _meta documentation keys
+        ct = node.get("class_type")
+        if not ct:
+            wf_errors.append(f"{os.path.basename(path)} node {node_id}: no class_type")
+        elif ct not in have:
+            near = sorted(n for n in have if ct.lower()[:6] in n.lower())[:5]
+            wf_errors.append(
+                f"{os.path.basename(path)} node {node_id}: class_type {ct!r} is not "
+                f"registered in this image. closest: {near or 'nothing similar'}")
+assert not wf_errors, "shipped workflows reference nodes this image does not have:\n  " + \
+    "\n  ".join(wf_errors)
+print(f"[boot] all class_types in {len(glob.glob('/workflows/*.json'))} shipped workflow(s) exist", flush=True)
 PY
 
 ENV PYTHONUNBUFFERED=1 \
