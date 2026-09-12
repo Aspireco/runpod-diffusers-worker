@@ -87,7 +87,12 @@ PY
 # returns a coroutine, registers NOTHING and raises nothing, so an assertion written that
 # way silently tests an empty registry. Await it.
 RUN cd /comfyui && python - <<'PY'
-import asyncio, inspect
+import asyncio, inspect, sys
+# --cpu must be in sys.argv BEFORE enable_args_parsing(), or ComfyUI initialises CUDA and
+# dies with "Found no NVIDIA driver" on a GPU-less CI runner. enable_args_parsing() alone is
+# not enough -- it only tells comfy.cli_args that argv is worth reading; the flag still has
+# to be there to read.
+sys.argv = [sys.argv[0], "--cpu"]
 import comfy.options
 comfy.options.enable_args_parsing()
 import nodes
