@@ -105,6 +105,13 @@ Pruning to the ancestors of the requested outputs drops 12 of 63 nodes — five 
 preview renders and a 1024 UV-atlas render — the difference between paying for one
 texture bake and six.
 
+**3. ComfyUI ignores `--cpu` when imported as a library.** Registering nodes on a
+GPU-less CI runner dies in `model_management.py`, which evaluates `get_torch_device()`
+at module level. Setting `--cpu` in `sys.argv` does nothing: `cli_args.py` only calls
+`parse_args()` when `comfy.options.args_parsing` is true, and that defaults to false —
+`main.py` flips it on its first two lines. `enable_args_parsing()` must be called
+first, and the converter asserts the flag took rather than trusting it.
+
 ## Deploy
 
 ```bash
