@@ -103,6 +103,11 @@ PIPE = WanImageToVideoPipeline.from_pretrained(
     MODEL_DIR, vae=vae, torch_dtype=_TORCH_DTYPE, local_files_only=True,
 )
 
+# What actually ran, as opposed to what was asked for. If torchao is missing the pipeline
+# silently stays bf16, and reporting the *requested* dtype would label a bf16 run "fp8" in
+# the results table -- corrupting the one comparison this lane exists to make.
+EFFECTIVE_DTYPE = DTYPE
+
 if DTYPE == "fp8":
     # The quantized arm of the benchmark. torchao casts the two transformers' linear layers
     # to fp8 in place, roughly halving their resident footprint again (~14GB per expert) so
@@ -116,6 +121,7 @@ if DTYPE == "fp8":
                 quantize_(mod, float8_weight_only())
         print("[boot] fp8 weight-only quantization applied to both experts", flush=True)
     except Exception as e:
+        EFFECTIVE_DTYPE = "bf16 (fp8 requested, unavailable)"
         print(f"[boot] fp8 requested but unavailable ({type(e).__name__}: {e}); staying bf16",
               flush=True)
 
@@ -139,7 +145,7 @@ except Exception:
     pass
 
 _SIG = set(inspect.signature(PIPE.__call__).parameters)
-print(f"[boot] ready in {time.time() - _t0:.1f}s | dtype={DTYPE} offload={OFFLOAD} "
+print(f"[boot] ready in {time.time() - _t0:.1f}s | dtype={EFFECTIVE_DTYPE} offload={OFFLOAD} "
       f"dual_guidance={'guidance_scale_2' in _SIG}", flush=True)
 
 
@@ -276,7 +282,7 @@ def handler(job):
         return {
             "video_url": "data:video/mp4;base64," + base64.b64encode(mp4).decode(),
             "model": MODEL_ID,
-            "dtype": DTYPE,
+            "dtype": EFFECTIVE_DTYPE,
             "offload": OFFLOAD,
             "frames": len(out_frames),
             "fps": fps,
