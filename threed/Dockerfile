@@ -39,17 +39,26 @@ COPY fetch_model.sh /usr/local/bin/fetch-model
 RUN chmod +x /usr/local/bin/fetch-model \
  && (command -v curl >/dev/null || (apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*))
 
+# HF_TOKEN arrives as a BuildKit SECRET, never a build-arg: a build-arg is recorded in
+# the image layer history, so anyone pulling the image could read the token back out.
+# `|| true` keeps local builds working with no secret -- these repos are all public, so
+# the token only buys a higher rate limit, which is precisely what the 429 above was.
+#
 # Separate layers on purpose: with the GHA cache, a 429 on a later model does not
 # re-pull the 5.25GB that already landed.
 #
 # int8_convrot over bf16: 5.25GB vs 10.34GB for output the benchmark could not tell
 # apart on product shots, and it is the difference between a cold start that pulls
 # 9GB and one that pulls 14GB. bf16 is a one-line change if a client ever needs it.
-RUN fetch-model \
+RUN --mount=type=secret,id=hf_token \
+    export HF_TOKEN="$(cat /run/secrets/hf_token 2>/dev/null || true)"; \
+    fetch-model \
       https://huggingface.co/Comfy-Org/TRELLIS.2/resolve/main/diffusion_models/trellis_2_int8_convrot.safetensors \
       /comfyui/models/diffusion_models trellis_2_int8_convrot.safetensors 5000000000
 
-RUN fetch-model \
+RUN --mount=type=secret,id=hf_token \
+    export HF_TOKEN="$(cat /run/secrets/hf_token 2>/dev/null || true)"; \
+    fetch-model \
       https://huggingface.co/Comfy-Org/TRELLIS.2/resolve/main/vae/trellis_2_shape_vae_bf16.safetensors \
       /comfyui/models/vae trellis_2_shape_vae_bf16.safetensors 1000000000  && fetch-model \
       https://huggingface.co/Comfy-Org/TRELLIS.2/resolve/main/vae/trellis_2_texture_vae_bf16.safetensors \
@@ -60,7 +69,9 @@ RUN fetch-model \
 # Comfy-Org/TRELLIS.2 (that repo ships a differently-named dino_v3_vit_l.safetensors).
 # Pulling the TRELLIS.2 one and renaming it produces a graph that loads and generates
 # noise, because they are not the same tensor layout.
-RUN fetch-model \
+RUN --mount=type=secret,id=hf_token \
+    export HF_TOKEN="$(cat /run/secrets/hf_token 2>/dev/null || true)"; \
+    fetch-model \
       https://huggingface.co/Comfy-Org/Pixal3D/resolve/main/clip_vision/dino_v3_L_naf_fp32.safetensors \
       /comfyui/models/clip_vision dino_v3_L_naf_fp32.safetensors 1100000000
 
@@ -68,14 +79,18 @@ RUN fetch-model \
 # graph it supplies the FOV that sets object proportions. On its own it is the
 # room-scale lane: TRELLIS.2 generates a single centred *object*, so it cannot produce
 # a kitchen. MoGe can, from a site photo.
-RUN fetch-model \
+RUN --mount=type=secret,id=hf_token \
+    export HF_TOKEN="$(cat /run/secrets/hf_token 2>/dev/null || true)"; \
+    fetch-model \
       https://huggingface.co/Comfy-Org/MoGe/resolve/main/geometry_estimation/moge_2_vitl_normal_fp16.safetensors \
       /comfyui/models/geometry_estimation moge_2_vitl_normal_fp16.safetensors 600000000
 
 # BiRefNet cuts the subject out. Image-to-3D models reconstruct whatever is not
 # background, so a product shot on a showroom floor becomes a product welded to a slab
 # of floor unless this runs first.
-RUN fetch-model \
+RUN --mount=type=secret,id=hf_token \
+    export HF_TOKEN="$(cat /run/secrets/hf_token 2>/dev/null || true)"; \
+    fetch-model \
       https://huggingface.co/Comfy-Org/BiRefNet/resolve/main/background_removal/birefnet.safetensors \
       /comfyui/models/background_removal birefnet.safetensors 400000000
 
