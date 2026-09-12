@@ -50,12 +50,23 @@ RUN comfy model download \
       --relative-path models/unet \
       --filename iclight_sd15_fbc.safetensors
 
-# SD1.5-class base that IC-Light's offsets were tuned against. Note runwayml/stable-diffusion-v1-5
-# was deleted from HuggingFace and 404s -- this is the maintained stand-in.
+# SD1.5 base -- IC-Light's UNet offsets were computed against exactly this checkpoint, so
+# anything else is a compatibility gamble. runwayml/stable-diffusion-v1-5 was deleted from
+# HuggingFace; stable-diffusion-v1-5/stable-diffusion-v1-5 is the community relocation and
+# is the canonical home now. Verified live before pinning: HTTP 200, 4.3GB, ungated.
+#
+# A previous revision pointed at stablediffusionapi/realistic-vision-v51 and 404'd the whole
+# build -- that path does not exist. If a photographic finetune is ever wanted here,
+# SG161222/Realistic_Vision_V5.1_noVAE is real (200, 2.1GB, same licence) but ships NO VAE,
+# so it needs a separate VAE file; this one is self-contained.
+#
+# LICENCE: creativeml-openrail-m. Commercial use is permitted -- OpenRAIL is a use-based
+# licence (it forbids specific harmful applications), not a non-commercial one. Distinct
+# from the CC-BY-NC weights excluded above.
 RUN comfy model download \
-      --url https://huggingface.co/stablediffusionapi/realistic-vision-v51/resolve/main/realisticVisionV51_v51VAE.safetensors \
+      --url https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5/resolve/main/v1-5-pruned-emaonly.safetensors \
       --relative-path models/checkpoints \
-      --filename realisticVisionV51.safetensors
+      --filename v1-5-pruned-emaonly.safetensors
 
 # Fail the BUILD rather than a billing GPU. ComfyUI's own CI flag boots the graph on CPU and
 # exits -- a broken node install or a missing model surfaces here, where the log is readable,

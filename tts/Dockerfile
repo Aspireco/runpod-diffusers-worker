@@ -21,16 +21,23 @@ open('/tmp/constraints.txt','w').write(''.join(f'{n}=={v}\n' for n,v in \
 [('torch',torch.__version__),('torchvision',torchvision.__version__),('torchaudio',torchaudio.__version__)]))" \
     && cat /tmp/constraints.txt
 
-# --only-binary refuses source builds entirely. Four earlier attempts died compiling from
-# source: first an old pinned numpy hitting pkgutil.ImpImporter (removed in Python 3.12),
-# then metadata-generation-failed once --no-build-isolation took away the isolated build
-# env that had been supplying those build deps. Wheels-only sidesteps both.
+# --only-binary is scoped to numpy, NOT :all:. Four earlier attempts died compiling numpy
+# from source (an old pin hitting pkgutil.ImpImporter, removed in Python 3.12; then
+# metadata-generation-failed once --no-build-isolation removed the build env supplying its
+# build deps). Attempt five used --only-binary=:all: and died differently: that flag also
+# applies to torch, and the constraints file above pins torch to the base image's LOCAL
+# version (e.g. 2.8.0+cu128), published on download.pytorch.org and never on PyPI.
+# Wheels-only then demands a PyPI distribution that cannot exist, and pip reports
+# "ResolutionImpossible ... no matching distributions available for your environment:
+# numpy, torch". Scoping the flag to numpy keeps the source-build fix while letting torch
+# be satisfied by the copy already in the base image -- which is exactly what video/ and
+# relight/ do, and both of those build green.
 #
 # transformers is deliberately NOT pinned to the house >=4.50.3 here: chatterbox targets an
 # older one and fails at runtime with "Could not import module 'LlamaModel'" because its
 # lazy import shim can't resolve the class against the newer API. Let chatterbox choose;
 # torch stays pinned by the constraints file, which is the dependency that breaks CUDA.
-RUN pip install --no-cache-dir -c /tmp/constraints.txt --only-binary=:all: \
+RUN pip install --no-cache-dir -c /tmp/constraints.txt --only-binary=numpy \
       "chatterbox-tts" "accelerate" \
     && pip install --no-cache-dir -c /tmp/constraints.txt \
       "huggingface-hub<1.0" \
