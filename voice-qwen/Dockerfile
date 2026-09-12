@@ -88,13 +88,23 @@ print('qwen3-tts node deps OK, transformers', transformers.__version__)" \
 # HF_HUB_ENABLE_HF_TRANSFER is deliberately NOT set: it needs a rust extension that is not
 # in this base image, and when it is missing huggingface_hub raises rather than falling
 # back -- a build failure that reads as a network problem.
+# AUTHENTICATED when the CI secret is present. Anonymous pulls from pooled GitHub
+# runner IPs hit HTTP 429 once several weight-baking lanes build concurrently -- this
+# lane hit it three times. The token arrives as a BuildKit secret, not a build-arg, so
+# it never lands in the image layer history; `|| true` keeps a local build working with
+# no secret, falling back to anonymous. The backoff below stays regardless: a higher
+# rate limit is not an absent one.
+#
 # Retried with backoff for the same reason as ../voice-comfy: HuggingFace 429s these
 # pulls from GitHub runner IPs, several lanes in this repo build concurrently and share
 # them, and snapshot_download surfaces the 429 as a hard failure. It succeeded on an
 # earlier build and failed the neighbouring lane in the same minute, which is exactly
 # the signature of a shared limiter rather than a broken URL. snapshot_download resumes
 # rather than restarting, so a retry picks up where the last attempt stopped.
-RUN NODE_DIR="$(find /comfyui/custom_nodes -maxdepth 1 -iname '*qwen*tts*' | head -1)" \
+RUN --mount=type=secret,id=hf_token \
+    export HF_TOKEN="$(cat /run/secrets/hf_token 2>/dev/null || true)" ; \
+    export HUGGING_FACE_HUB_TOKEN="$HF_TOKEN" ; \
+    NODE_DIR="$(find /comfyui/custom_nodes -maxdepth 1 -iname '*qwen*tts*' | head -1)" \
     && test -n "$NODE_DIR" || (echo "qwen3-tts node not installed" && exit 1) \
     && ok=0 \
     && for delay in 0 30 60 120 240 480 ; do \

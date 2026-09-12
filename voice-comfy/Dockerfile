@@ -66,8 +66,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends espeak-ng ffmpe
 # Each file is verified non-trivial before being accepted, because a 429 body is a few
 # hundred bytes that would otherwise sit on disk wearing a .safetensors name and only fail
 # much later, at load time, on a billing GPU.
+# AUTHENTICATED when the CI secret is present. Anonymous pulls from pooled GitHub
+# runner IPs hit HTTP 429 once several weight-baking lanes build concurrently -- this
+# lane hit it three times. The token arrives as a BuildKit secret, not a build-arg, so
+# it never lands in the image layer history; `|| true` keeps a local build working with
+# no secret, falling back to anonymous. The backoff below stays regardless: a higher
+# rate limit is not an absent one.
 ARG VV=https://huggingface.co/microsoft/VibeVoice-1.5B/resolve/main
-RUN for f in config.json model.safetensors.index.json preprocessor_config.json \
+RUN --mount=type=secret,id=hf_token \
+    export HF_TOKEN="$(cat /run/secrets/hf_token 2>/dev/null || true)" ; \
+    export HUGGING_FACE_HUB_TOKEN="$HF_TOKEN" ; \
+    for f in config.json model.safetensors.index.json preprocessor_config.json \
              model-00001-of-00003.safetensors \
              model-00002-of-00003.safetensors \
              model-00003-of-00003.safetensors ; do \
@@ -87,7 +96,10 @@ RUN for f in config.json model.safetensors.index.json preprocessor_config.json \
 # weights, and without it the node loads, the graph validates, and generation dies at the
 # first token with a message about a missing processor. 11MB, Apache-2.0, ungated.
 ARG QW=https://huggingface.co/Qwen/Qwen2.5-1.5B/resolve/main
-RUN for f in tokenizer.json tokenizer_config.json vocab.json merges.txt ; do \
+RUN --mount=type=secret,id=hf_token \
+    export HF_TOKEN="$(cat /run/secrets/hf_token 2>/dev/null || true)" ; \
+    export HUGGING_FACE_HUB_TOKEN="$HF_TOKEN" ; \
+    for f in tokenizer.json tokenizer_config.json vocab.json merges.txt ; do \
       ok=0 ; \
       for delay in 0 30 60 120 240 ; do \
         [ $delay -gt 0 ] && { echo "retrying $f in ${delay}s" ; sleep $delay ; } ; \
