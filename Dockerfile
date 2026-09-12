@@ -18,6 +18,11 @@ ENV MODEL_ID="Tongyi-MAI/Z-Image-Turbo" \
 # torch is left exactly as the base image ships it: reinstalling from default PyPI pulls
 # CUDA 13 wheels that need driver >=580, while Runpod hosts run 570/575, and CUDA init then
 # dies before a single log line is written.
+# cryptography arrives via apt in the base image with no pip record, so pip refuses to
+# upgrade it for runpod's dependency chain ("Cannot uninstall cryptography ...
+# uninstall-no-record-file"). Shadow it instead of trying to remove it.
+RUN pip install --no-cache-dir --ignore-installed cryptography
+
 RUN pip install --no-cache-dir \
       "diffusers>=0.31" \
       "transformers>=4.50.3,<5" \
