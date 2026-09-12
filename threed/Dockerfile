@@ -80,9 +80,7 @@ COPY handler.py /handler.py
 # docstring for why a static conversion is not possible. This is the step that catches
 # a renamed input or a node missing from this ComfyUI version -- on the builder, where
 # the traceback is readable, rather than on a GPU billing by the second.
-RUN cd /workflows && cp /build_api_workflows.py . \
- && python build_api_workflows.py \
- && rm build_api_workflows.py
+RUN WORKFLOW_DIR=/workflows python /build_api_workflows.py
 
 # Same class of check as the sibling comfy worker: boot the whole graph engine on CPU
 # and exit. A missing model file or a broken core node surfaces here.

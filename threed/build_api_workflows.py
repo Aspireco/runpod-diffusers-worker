@@ -53,11 +53,20 @@ def load_node_defs():
 
     init = getattr(nodes, "init_extra_nodes", None)
     if init is not None:
-        try:
-            res = init(init_custom_nodes=True)
-        except TypeError:
-            res = init()
-        if hasattr(res, "__await__"):  # newer ComfyUI made this a coroutine
+        # In ComfyUI 0.34.0 this is `async def init_extra_nodes(init_custom_nodes=True,
+        # init_api_nodes=True)`. api_nodes are the paid cloud connectors (Meshy, Rodin,
+        # Tripo's hosted API); loading them is pointless here and touches the network
+        # during a build, so they are skipped where the signature allows it.
+        res = None
+        for kwargs in ({"init_custom_nodes": True, "init_api_nodes": False},
+                       {"init_custom_nodes": True},
+                       {}):
+            try:
+                res = init(**kwargs)
+                break
+            except TypeError:
+                continue
+        if res is not None and hasattr(res, "__await__"):
             import asyncio
 
             asyncio.run(res)
@@ -237,8 +246,12 @@ def main():
         convert(sys.argv[1], sys.argv[2], keep, defs)
         return
 
-    here = os.path.dirname(os.path.abspath(__file__))
-    wf = os.path.join(here, "workflows")
+    # Explicit, not derived from __file__: the script is copied to / in the image while
+    # the templates live in /workflows, so a path relative to the script resolves to
+    # /workflows/workflows and finds nothing.
+    wf = os.environ.get("WORKFLOW_DIR", "/workflows")
+    if not os.path.isdir(wf):
+        raise SystemExit(f"workflow dir {wf!r} does not exist")
 
     jobs = [
         # 322 Save3DAdvanced <- MeshToFile3D(285) <- MeshSmoothNormals(260)
