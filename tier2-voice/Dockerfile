@@ -39,22 +39,39 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 # pip would satisfy it from default PyPI, which since 2.11 means CUDA 13 wheels needing
 # driver >= 580. Runpod hosts run 570/575, so CUDA init dies before Python writes a line and
 # the worker crash-loops with completely empty logs. Every install below carries -c.
-RUN python -c "import torch, torchvision, torchaudio; \
+# numpy is pinned alongside torch, not separately. coqui-tts pulls a deep scientific stack
+# and any of it can drag numpy across the 1.x/2.x boundary, which breaks the base image's
+# torch ABI just as surely as replacing torch itself would.
+RUN python -c "import torch, torchvision, torchaudio, numpy; \
 open('/tmp/constraints.txt','w').write(''.join(f'{n}=={v}\n' for n,v in \
-[('torch',torch.__version__),('torchvision',torchvision.__version__),('torchaudio',torchaudio.__version__)]))" \
+[('torch',torch.__version__),('torchvision',torchvision.__version__),('torchaudio',torchaudio.__version__),('numpy',numpy.__version__)]))" \
     && cat /tmp/constraints.txt
 
 # coqui-tts, NOT the original `TTS` package: TTS 0.22.0 caps at Python <3.12 and this base
 # is Ubuntu 24.04 / Python 3.12, so the original resolves to nothing installable. The idiap
 # fork is the maintained continuation. It changes the CODE licence, never the weights'.
-RUN pip install --no-cache-dir -c /tmp/constraints.txt --only-binary=:all: \
+#
+# --prefer-binary, NOT --only-binary=:all:. The house rule prefers binary-only because
+# SOURCE BUILDS of C extensions killed a worker five times over. But coqui-tts depends on
+# num2words -> docopt, and docopt has NO wheel on PyPI at any version -- "(from versions:
+# none)". --only-binary=:all: therefore cannot resolve this tree at all; it failed the first
+# build in 5.7 seconds. docopt is a single pure-Python file with nothing to compile, so
+# --prefer-binary keeps the protection that matters (wheels win wherever one exists) while
+# letting the handful of pure-Python sdists through. The torch assert below is what actually
+# enforces the rule the house rule exists to protect.
+RUN pip install --no-cache-dir -c /tmp/constraints.txt --prefer-binary \
       "coqui-tts==0.27.5" \
       "huggingface-hub<1.0" \
-      "numpy<2" \
       "runpod>=1.10.1"
 
-# Fail the BUILD, not a billing GPU, if torch was swapped out from under us.
-RUN python -c "import torch; v=torch.__version__; print('torch', v); assert 'cu13' not in v, f'torch replaced: {v}'"
+# Fail the BUILD, not a billing GPU, if torch or numpy was swapped out from under us.
+# This is the assert the --prefer-binary relaxation above is leaning on, so it checks the
+# exact failure it is protecting against: a CUDA 13 wheel that needs driver >= 580 on hosts
+# running 570/575, which dies before Python prints a line.
+RUN python -c "import torch, numpy; v=torch.__version__; print('torch', v, '| numpy', numpy.__version__); \
+assert 'cu13' not in v, f'torch replaced: {v}'; \
+import torch.version as tv; print('cuda', tv.cuda); \
+assert tv.cuda is None or not str(tv.cuda).startswith('13'), f'CUDA 13 build: {tv.cuda}'"
 RUN python -c "from TTS.tts.models.xtts import Xtts; print('xtts importable')"
 
 # Weights baked in rather than mounted through Runpod Model Caching. XTTS v2 is ~1.8GB, the
