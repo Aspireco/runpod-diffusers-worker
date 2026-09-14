@@ -3,6 +3,13 @@
 # it is not pinned to a single datacentre.
 FROM runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404
 
+# The torch280 base ships HF_HUB_ENABLE_HF_TRANSFER=1 without the hf_transfer package,
+# so the first runtime download from HuggingFace dies with "Fast download using
+# 'hf_transfer' is enabled ... but 'hf_transfer' package is not available". Found live on
+# the music lane 2026-09-14; every lane on this base inherits it. Turning the fast path
+# off costs nothing -- it was never installed to begin with.
+ENV HF_HUB_ENABLE_HF_TRANSFER=0
+
 ENV MODEL_ID="hunyuanvideo-community/HunyuanVideo-I2V" \
     HF_HUB_OFFLINE=1 \
     TRANSFORMERS_OFFLINE=1 \

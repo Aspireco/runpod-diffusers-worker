@@ -288,6 +288,21 @@ def run(workflow, image_b64, params):
             # third. Say so, with the numbers and the knobs, instead of letting the
             # response evaporate somewhere between here and the client.
             total = sum(len(m.get("data") or "") for m in meshes)
+            if total > MAX_RETURN_BYTES and len(meshes) > 1:
+                # The graph terminates in TWO SaveGLB nodes -- the raw TRELLIS mesh and the
+                # decimated/baked one -- and both come back. At the documented production
+                # size (120k faces, 1024 atlas) the final mesh is ~3.6 MB and fits; the raw
+                # intermediate is ~10 MB and does not. Returning both trips the limit on a
+                # run that actually succeeded. Keep the smallest mesh -- that is the
+                # decimated output, the one the caller asked for -- and drop the rest.
+                # Only the single-mesh case falls through to the hard error below.
+                meshes.sort(key=lambda m: m.get("bytes") or 0)
+                kept, dropped = meshes[0], [m["filename"] for m in meshes[1:]]
+                print(f"[threed] {len(dropped)} intermediate mesh(es) dropped to fit the "
+                      f"return limit: {dropped}; returning {kept['filename']} "
+                      f"({(kept.get('bytes') or 0)/1e6:.2f} MB)", flush=True)
+                meshes = [kept]
+                total = len(kept.get("data") or "")
             if total > MAX_RETURN_BYTES:
                 raise RuntimeError(
                     f"mesh generated successfully but the base64 payload is "

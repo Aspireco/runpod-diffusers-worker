@@ -272,9 +272,24 @@ def handler(job):
 
         result = PIPE(**kwargs)
         out_frames = result.frames
-        if isinstance(out_frames, list) and out_frames and isinstance(out_frames[0], list):
+        # diffusers changed what `.frames` is. Older releases returned a list of lists of
+        # PIL images; current ones return a numpy array of shape (batch, frames, H, W, C),
+        # float in [0, 1]. The old `if not out_frames:` guard raises "The truth value of an
+        # array with more than one element is ambiguous" on the new type -- AFTER the full
+        # generation has run and been paid for. Found live 2026-09-14 on :latest, which the
+        # unbounded `diffusers>=0.31` pin let drift. Normalise both shapes to a list of PIL
+        # frames, which is what _frames_to_mp4 expects.
+        import numpy as np
+        from PIL import Image
+        if isinstance(out_frames, np.ndarray):
+            if out_frames.ndim == 5:
+                out_frames = out_frames[0]
+            if out_frames.dtype != np.uint8:
+                out_frames = (np.clip(out_frames, 0.0, 1.0) * 255.0).round().astype(np.uint8)
+            out_frames = [Image.fromarray(f) for f in out_frames]
+        elif isinstance(out_frames, list) and out_frames and isinstance(out_frames[0], list):
             out_frames = out_frames[0]
-        if not out_frames:
+        if out_frames is None or len(out_frames) == 0:
             return {"error": "pipeline returned no frames"}
 
         fps = int(job_input.get("fps", FPS))
