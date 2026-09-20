@@ -45,6 +45,10 @@ jobs:
             image: runpod-hunyuan-i2v-worker
           - context: comfy
             image: runpod-comfy-worker
+          # Studio video worker: the comfy base moved to ComfyUI v0.35.0 for LTX-2.5 and
+          # MiniMax H3. No weights baked -- they come from the studio network volume.
+          - context: comfy-studio
+            image: runpod-comfy-studio-worker
           # 3D lane. TRELLIS.2 + MoGe-2 + BiRefNet, ~9.6GB of weights on top of the
           # worker-comfyui base -- the largest image in this matrix, which is why the
           # disk-reclaim step above is load-bearing for it specifically.
