@@ -64,6 +64,11 @@ jobs:
             image: runpod-voice-qwen-worker
           - context: voice-comfy
             image: runpod-voice-comfy-worker
+          # voice-suite is TTS-Audio-Suite, deliberately NOT folded into voice-comfy:
+          # it pins transformers>=5.3.0 and force-reinstalls, which would re-solve the
+          # dependency set VibeVoice depends on. Separate image, per the rule above.
+          - context: voice-suite
+            image: runpod-voice-suite-worker
           - context: voice-bench
             image: runpod-voice-bench-worker
           # TIER 2 CALIBRATION ONLY -- non-commercial weights, never published.
