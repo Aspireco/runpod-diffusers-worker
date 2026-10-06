@@ -15,9 +15,9 @@ set -a; source ../../runpod-stack/.env; set +a
 GPU="${1:-NVIDIA A100-SXM4-80GB}"
 VOLUME="yweuz29h2k"
 IMAGE="ghcr.io/aspireco/runpod-wan-a14b-worker:latest"
-# bf16 on an 80GB card holds both 28.6GB experts resident, so offload is off. On a 48GB
-# card pass OFFLOAD=model; see README for the full table.
-OFFLOAD="${OFFLOAD:-none}"
+# bf16 on an 80GB card holds both 28.6GB experts resident at 480p, but 720p x 81 frames
+# OOMs fully resident (2026-10-06), so model offload is the default on every card now.
+OFFLOAD="${OFFLOAD:-model}"
 DTYPE="${DTYPE:-bf16}"
 
 echo "== lane mos-wan-a14b =="

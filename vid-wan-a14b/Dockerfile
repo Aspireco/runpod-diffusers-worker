@@ -48,6 +48,7 @@ RUN pip install --no-cache-dir -c /tmp/constraints.txt \
       "transformers>=4.50.3,<5" \
       "huggingface-hub<1.0" \
       "accelerate" \
+      "peft>=0.15" \
       "sentencepiece" \
       "protobuf" \
       "ftfy" \
@@ -62,6 +63,14 @@ from diffusers import AutoencoderKLWan, WanImageToVideoPipeline; \
 p = set(inspect.signature(WanImageToVideoPipeline.__init__).parameters); \
 assert 'transformer_2' in p, f'diffusers {diffusers.__version__} has no MoE second expert: {sorted(p)}'; \
 print('Wan MoE pipeline OK, dual-expert slot present')"
+# The lightx2v 4-step LoRA needs one adapter per expert; load_into_transformer_2 is the
+# switch that puts the low-noise LoRA on the second one. It arrives via **kwargs, so the
+# source is checked rather than the signature. peft must import or no LoRA loads at all.
+RUN python -c "\
+import inspect, peft; from diffusers import WanImageToVideoPipeline; \
+src = inspect.getsource(WanImageToVideoPipeline.load_lora_weights); \
+assert 'load_into_transformer_2' in src, 'diffusers cannot load a LoRA into transformer_2'; \
+print('peft', peft.__version__, '| Wan dual-expert LoRA loading OK')"
 
 
 # torchao LAST, in its own layer, and pinned -- all three deliberate.

@@ -125,8 +125,50 @@ if DTYPE == "fp8":
         print(f"[boot] fp8 requested but unavailable ({type(e).__name__}: {e}); staying bf16",
               flush=True)
 
+# LightX2V 4-step distillation (lightx2v/Wan2.2-Distill-Loras, Apache-2.0): one LoRA per
+# expert. With it the lane runs 4 steps at CFG 1 instead of 40 at CFG 3.5 -- roughly ten
+# times less work per clip. Added 2026-10-06 after a 720p x 81-frame job ran 30 minutes and
+# then OOMed. The files are fetched once onto the network volume; if anything about them
+# fails, the lane stays on the plain 40-step model rather than refusing to boot.
+LIGHTNING = os.environ.get("LIGHTNING", "1") == "1"
+LORA_REPO = os.environ.get("LORA_REPO", "lightx2v/Wan2.2-Distill-Loras")
+LORA_DIR = os.environ.get("LORA_DIR", "/runpod-volume/loras/wan22-i2v-lightx2v")
+LORA_HIGH = os.environ.get("LORA_HIGH",
+                           "wan2.2_i2v_A14b_high_noise_lora_rank64_lightx2v_4step_1022.safetensors")
+LORA_LOW = os.environ.get("LORA_LOW",
+                          "wan2.2_i2v_A14b_low_noise_lora_rank64_lightx2v_4step_1022.safetensors")
+LIGHTNING_ACTIVE = False
+if LIGHTNING:
+    try:
+        from huggingface_hub import hf_hub_download
+        os.makedirs(LORA_DIR, exist_ok=True)
+        for fname in (LORA_HIGH, LORA_LOW):
+            if not os.path.isfile(os.path.join(LORA_DIR, fname)):
+                print(f"[boot] fetching {LORA_REPO}/{fname}", flush=True)
+                hf_hub_download(LORA_REPO, fname, local_dir=LORA_DIR)
+        # high-noise LoRA -> transformer (first expert), low-noise -> transformer_2
+        PIPE.load_lora_weights(LORA_DIR, weight_name=LORA_HIGH, adapter_name="lightx2v")
+        PIPE.load_lora_weights(LORA_DIR, weight_name=LORA_LOW, adapter_name="lightx2v_2",
+                               load_into_transformer_2=True)
+        PIPE.set_adapters(["lightx2v", "lightx2v_2"], adapter_weights=[1.0, 1.0])
+        LIGHTNING_ACTIVE = True
+        print("[boot] lightx2v 4-step LoRAs loaded on both experts", flush=True)
+    except Exception as e:
+        print(f"[boot] lightx2v LoRAs NOT loaded ({type(e).__name__}: {e}); "
+              "running the plain 40-step model", flush=True)
+
+# Decode the latent video in tiles. A 720p x 81-frame clip decoded in one pass by the fp32
+# VAE is the single largest allocation in a job and the last thing that runs, so an OOM
+# there throws away a whole paid generation.
+try:
+    PIPE.vae.enable_tiling()
+    print("[boot] vae tiling on", flush=True)
+except Exception as e:
+    print(f"[boot] vae tiling unavailable ({type(e).__name__}: {e})", flush=True)
+
 # Two 28.6GB experts plus an 11GB text encoder is ~68GB resident, so anything short of an
-# 80GB card needs offload. model-level offload keeps whole submodules on the GPU and swaps
+# 80GB card needs offload. Fully resident on the 80GB card fits 480p but NOT 720p x 81 frames
+# (OOM 2026-10-06), so the endpoint now runs OFFLOAD=model. model-level offload keeps whole submodules on the GPU and swaps
 # them at boundaries (fast, wants ~30GB); sequential goes layer by layer (slow, ~10GB) and
 # is the only thing that fits a 24GB card.
 if OFFLOAD == "sequential":
@@ -146,7 +188,12 @@ except Exception:
 
 _SIG = set(inspect.signature(PIPE.__call__).parameters)
 print(f"[boot] ready in {time.time() - _t0:.1f}s | dtype={EFFECTIVE_DTYPE} offload={OFFLOAD} "
-      f"dual_guidance={'guidance_scale_2' in _SIG}", flush=True)
+      f"dual_guidance={'guidance_scale_2' in _SIG} lightning={LIGHTNING_ACTIVE}", flush=True)
+
+# The distilled LoRAs are trained for 4 steps at CFG 1 (CFG off); the plain model wants 40
+# steps at 3.5. A job can still override any of these.
+DEFAULT_STEPS = 4 if LIGHTNING_ACTIVE else 40
+DEFAULT_CFG = 1.0 if LIGHTNING_ACTIVE else 3.5
 
 
 def _load_image(job_input):
@@ -238,15 +285,15 @@ def handler(job):
             "width": width,
             "height": height,
             "num_frames": frames,
-            "num_inference_steps": int(job_input.get("num_inference_steps", 40)),
-            "guidance_scale": float(job_input.get("guidance_scale", 3.5)),
+            "num_inference_steps": int(job_input.get("num_inference_steps", DEFAULT_STEPS)),
+            "guidance_scale": float(job_input.get("guidance_scale", DEFAULT_CFG)),
         }
 
         # The MoE takes two guidance values, one per expert. Older diffusers exposes only
         # the single scale, so this is introspected rather than assumed - passing an
         # unknown kwarg to a diffusers pipeline is a hard TypeError, not a warning.
         if "guidance_scale_2" in _SIG:
-            kwargs["guidance_scale_2"] = float(job_input.get("guidance_scale_2", 3.5))
+            kwargs["guidance_scale_2"] = float(job_input.get("guidance_scale_2", DEFAULT_CFG))
 
         # 720p wants a higher flow shift than the 3.0 baked into the scheduler config;
         # Wan's own reference settings use 5.0 at this resolution. Left adjustable because
