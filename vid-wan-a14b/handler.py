@@ -289,6 +289,17 @@ def handler(job):
             "guidance_scale": float(job_input.get("guidance_scale", DEFAULT_CFG)),
         }
 
+        # First-last-frame: an optional end image the clip must arrive at. This is what keeps
+        # contact actions honest (a pallet set down, a plank seated) and lets scene N's end
+        # frame be scene N+1's start. Passed only when this diffusers build accepts it.
+        last = _load_image({"image_url": job_input.get("last_image_url"),
+                            "image_base64": job_input.get("last_image_base64")})
+        if last is not None:
+            if "last_image" not in _SIG:
+                return {"error": "this diffusers build has no last_image support; "
+                                 "first-last-frame is unavailable on this image"}
+            kwargs["last_image"] = _fit(last, width, height)
+
         # The MoE takes two guidance values, one per expert. Older diffusers exposes only
         # the single scale, so this is introspected rather than assumed - passing an
         # unknown kwarg to a diffusers pipeline is a hard TypeError, not a warning.
