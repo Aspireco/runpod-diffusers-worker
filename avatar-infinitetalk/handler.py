@@ -79,22 +79,71 @@ def _resolve_pinned_ip(hostname):
     return pinned_ip
 
 
+_URL_CONTROL_OR_WS = frozenset(chr(c) for c in range(0x21)) | {chr(0x7f)}  # C0 + space + DEL
+
+
+def _canonical_host(hostname):
+    """호스트를 소문자 ASCII로 고정한다. 비-ASCII(IDN)는 punycode로 인코딩한다."""
+    try:
+        hostname.encode("ascii")
+        return hostname.lower()
+    except UnicodeEncodeError:
+        try:
+            return hostname.encode("idna").decode("ascii")
+        except UnicodeError as e:
+            raise Exception(f"호스트명을 IDNA로 인코딩할 수 없습니다: {hostname}: {e}") from None
+
+
 def validate_external_url(url):
     """http(s)만 허용하고, 호스트의 모든 해석 주소가 공인(global)이 아니면
     거부한다 (SSRF 방지). 인자 주입 방지를 위해 '-'로 시작하는 값도 거부한다.
-    DNS 재조회로 인한 TOCTOU/리바인딩을 막기 위해, 검사에 쓴 IP를 그대로
-    돌려준다 -- 호출자는 이후 절대 호스트명을 다시 조회해서는 안 된다."""
+
+    검증기와 다운로더가 같은 URL 문자열을 서로 다르게 파싱하면(userinfo,
+    백슬래시, 이상한 포트, IDN 등) 그 파서 불일치 자체가 SSRF 우회로 이어질 수
+    있다. 그래서 URL은 여기서 urlsplit으로 '한 번만' 파싱하고, 그 결과를 그대로
+    쓰는 대신 scheme/host(소문자 IDNA)/explicit port/path/query만으로 표준형
+    URL을 다시 조립해서 돌려준다 -- 원본 문자열은 검증이 끝나면 버려지고,
+    호출자는 이 표준형과 거기서 얻은 고정 IP만 쓴다(원본 문자열을 다시 쓰면 그
+    파싱 불일치 문제가 되돌아온다)."""
     if not isinstance(url, str) or not url.strip():
         raise Exception("URL이 비어 있습니다")
-    if url.lstrip().startswith("-"):
+    if url != url.strip() or any(ch in _URL_CONTROL_OR_WS for ch in url):
+        raise Exception("URL 앞뒤 또는 내부에 공백/제어 문자를 포함할 수 없습니다")
+    if "\\" in url:
+        raise Exception("URL에 백슬래시를 포함할 수 없습니다")
+    if url.startswith("-"):
         raise Exception("URL이 '-'로 시작할 수 없습니다 (인자 주입 방지)")
-    parsed = urllib.parse.urlparse(url)
+
+    parsed = urllib.parse.urlsplit(url)
     if parsed.scheme not in _ALLOWED_URL_SCHEMES:
         raise Exception(f"지원하지 않는 URL 스킴입니다: {parsed.scheme!r}")
+    if parsed.username is not None or parsed.password is not None:
+        raise Exception("URL에 사용자 정보(userinfo)를 포함할 수 없습니다")
     hostname = parsed.hostname
     if not hostname:
         raise Exception("URL에 호스트가 없습니다")
-    return _resolve_pinned_ip(hostname)
+    if ":" in hostname:
+        # IPv6 literal host. Not needed by any lane input today; rejecting
+        # outright avoids the bracket-syntax edge cases in both the rebuilt
+        # URL and curl's --resolve rather than risk getting them wrong.
+        raise Exception("IPv6 리터럴 호스트는 지원하지 않습니다")
+    try:
+        port = parsed.port  # raises ValueError on a malformed port
+    except ValueError as e:
+        raise Exception(f"URL의 포트가 올바르지 않습니다: {e}") from None
+    port = port or (443 if parsed.scheme == "https" else 80)
+
+    canonical_host = _canonical_host(hostname)
+    pinned_ip = _resolve_pinned_ip(canonical_host)
+
+    path = parsed.path or "/"
+    canonical_url = f"{parsed.scheme}://{canonical_host}:{port}{path}"
+    if parsed.query:
+        canonical_url += f"?{parsed.query}"
+    # parsed.fragment is deliberately dropped: it is client-side only and
+    # rebuilding from parts (instead of forwarding the original string)
+    # removes it for free.
+    return canonical_url, pinned_ip
 
 
 def _resolve_within_sandbox(path_str):
@@ -132,25 +181,28 @@ def clamp_int(value, default, lo, hi, name):
 
 
 def download_file_from_url(url, output_path):
-    """URL에서 파일을 다운로드하는 함수"""
-    pinned_ip = validate_external_url(url)
-    parsed = urllib.parse.urlparse(url)
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    """URL에서 파일을 다운로드하는 함수.
+
+    validate_external_url이 돌려준 표준형 URL과 고정 IP만 쓴다 -- 호출자가
+    준 원본 문자열은 검증 한 번 외에는 절대 다시 파싱하거나 내려받기에
+    쓰지 않는다 (검증기/다운로더 파서 불일치로 인한 SSRF 우회 방지)."""
+    canonical_url, pinned_ip = validate_external_url(url)
+    parsed = urllib.parse.urlsplit(canonical_url)
     # curl --resolve host:port:ip: 이 호스트/포트에 대해서는 curl 자신의 DNS
     # 조회를 건너뛰고 지정한 IP로만 접속한다 -- validate_external_url이 검사한
     # 바로 그 IP로 고정해서, 요청 시점에 호스트명을 다시 조회하는 TOCTOU/DNS
     # 리바인딩 창을 없앤다. Host 헤더와 TLS SNI는 원래 호스트명 그대로 나간다.
-    resolve_arg = f"{parsed.hostname}:{port}:{pinned_ip}"
+    resolve_arg = f"{parsed.hostname}:{parsed.port}:{pinned_ip}"
     try:
         # --max-redirs 0: 리다이렉트를 따라가지 않는다 -- 공인 URL이 사설
         #   주소로 302를 보내는 SSRF 우회를 막는 가장 확실한 방법.
         # --max-filesize 100M, --max-time 30: 디스크 고갈/장시간 연결을 막는다.
-        # "--" 뒤에 url: url이 '-'로 시작해도 curl 옵션으로 해석되지 않는다
-        #   (인자 주입 방지, validate_external_url의 검사와 이중 방어).
+        # "--" 뒤에 canonical_url: '-'로 시작할 수 없음은 이미 검증됐지만
+        #   이중 방어로 유지한다 (인자 주입 방지).
         result = subprocess.run(
             ["curl", "--resolve", resolve_arg, "--max-redirs", "0",
              "--max-filesize", "100M", "--max-time", "30",
-             "--silent", "--show-error", "-o", output_path, "--", url],
+             "--silent", "--show-error", "-o", output_path, "--", canonical_url],
             capture_output=True,
             text=True,
             timeout=45,
@@ -158,7 +210,7 @@ def download_file_from_url(url, output_path):
 
         if result.returncode == 0:
             logger.info(
-                f"✅ URL에서 파일을 성공적으로 다운로드했습니다: {url} (고정 IP {pinned_ip}) -> {output_path}"
+                f"✅ URL에서 파일을 성공적으로 다운로드했습니다: {canonical_url} (고정 IP {pinned_ip}) -> {output_path}"
             )
             return output_path
         else:
