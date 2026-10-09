@@ -43,7 +43,17 @@ client_id = str(uuid.uuid4())
 
 _ALLOWED_URL_SCHEMES = {"http", "https"}
 _MAX_INPUT_BYTES = 100 * 1024 * 1024  # 100 MB -- generous for one image/audio clip
-SANDBOX_ROOT = os.path.realpath("/tmp/infinitetalk_io")
+# Must live under ComfyUI's own input directory, not /tmp: ComfyUI's core
+# LoadImage/LoadAudio nodes resolve their path argument with
+# folder_paths.get_annotated_filepath(), which silently discards any path
+# that is not a subpath of folder_paths.get_input_directory() (an
+# anti-traversal guard in ComfyUI itself) and reports it as "Invalid
+# audio/image file" -- this is what every prior InfiniteTalk job failed on
+# once it got past the earlier bugs, including this one on its first fix.
+# ComfyUI is launched with no --input-directory override, so the real
+# directory is ComfyUI's default, /ComfyUI/input (confirmed from this image's
+# own boot log: "Asset scan [input] directories: ['/ComfyUI/input']").
+SANDBOX_ROOT = os.path.realpath("/ComfyUI/input/infinitetalk_io")
 os.makedirs(SANDBOX_ROOT, exist_ok=True)
 
 
