@@ -47,22 +47,43 @@ SANDBOX_ROOT = os.path.realpath("/tmp/infinitetalk_io")
 os.makedirs(SANDBOX_ROOT, exist_ok=True)
 
 
-def _check_ip_not_internal(ip_str, hostname):
-    ip_str = ip_str.split("%", 1)[0]  # strip an IPv6 zone id if present
-    ip = ipaddress.ip_address(ip_str)
-    mapped = ip.ipv4_mapped if hasattr(ip, "ipv4_mapped") else None
-    if mapped is not None:
-        ip = mapped
-    if (ip.is_private or ip.is_loopback or ip.is_link_local or
-            ip.is_multicast or ip.is_reserved or ip.is_unspecified):
-        raise Exception(
-            f"거부됨(SSRF 방지): {hostname}가 내부/사설 주소로 해석됩니다: {ip_str}"
-        )
+def _resolve_pinned_ip(hostname):
+    """호스트명을 단 한 번만 조회하고, 응답에 포함된 모든 주소가 공인(global)
+    주소인지 검사한 뒤 그중 하나를 고정해서 반환한다.
+
+    왜 '한 번만'인가: 먼저 조회해서 검사하고 나중에 다시 조회해서 접속하면,
+    그 사이에 DNS 레코드가 바뀌어(DNS rebinding) 검사는 공인 주소를 보고
+    실제 접속은 내부 주소로 가는 TOCTOU 허점이 생긴다. 검사에 쓴 주소를 그대로
+    고정해 접속까지 써야 그 허점이 닫힌다 (download_file_from_url의 curl
+    --resolve 참고). is_global은 사설/루프백/링크로컬/예약/멀티캐스트/미지정을
+    전부 아우르는 단일 기준이라 개별 플래그를 OR로 나열하는 것보다 안전하다."""
+    try:
+        infos = socket.getaddrinfo(hostname, None)
+    except socket.gaierror as e:
+        raise Exception(f"DNS 확인 실패: {hostname}: {e}")
+    if not infos:
+        raise Exception(f"DNS 확인 결과가 없습니다: {hostname}")
+    pinned_ip = None
+    for info in infos:
+        ip_str = info[4][0].split("%", 1)[0]  # strip an IPv6 zone id if present
+        ip = ipaddress.ip_address(ip_str)
+        mapped = ip.ipv4_mapped if hasattr(ip, "ipv4_mapped") else None
+        if mapped is not None:
+            ip = mapped
+        if not ip.is_global:
+            raise Exception(
+                f"거부됨(SSRF 방지): {hostname}가 공인되지 않은 주소로 해석됩니다: {ip_str}"
+            )
+        if pinned_ip is None:
+            pinned_ip = ip_str
+    return pinned_ip
 
 
 def validate_external_url(url):
-    """http(s)만 허용하고, 호스트가 사설/루프백/링크로컬/예약 대역으로 해석되면
-    거부한다 (SSRF 방지). 인자 주입 방지를 위해 '-'로 시작하는 값도 거부한다."""
+    """http(s)만 허용하고, 호스트의 모든 해석 주소가 공인(global)이 아니면
+    거부한다 (SSRF 방지). 인자 주입 방지를 위해 '-'로 시작하는 값도 거부한다.
+    DNS 재조회로 인한 TOCTOU/리바인딩을 막기 위해, 검사에 쓴 IP를 그대로
+    돌려준다 -- 호출자는 이후 절대 호스트명을 다시 조회해서는 안 된다."""
     if not isinstance(url, str) or not url.strip():
         raise Exception("URL이 비어 있습니다")
     if url.lstrip().startswith("-"):
@@ -73,15 +94,7 @@ def validate_external_url(url):
     hostname = parsed.hostname
     if not hostname:
         raise Exception("URL에 호스트가 없습니다")
-    try:
-        infos = socket.getaddrinfo(hostname, None)
-    except socket.gaierror as e:
-        raise Exception(f"DNS 확인 실패: {hostname}: {e}")
-    if not infos:
-        raise Exception(f"DNS 확인 결과가 없습니다: {hostname}")
-    for info in infos:
-        _check_ip_not_internal(info[4][0], hostname)
-    return url
+    return _resolve_pinned_ip(hostname)
 
 
 def _resolve_within_sandbox(path_str):
@@ -120,29 +133,36 @@ def clamp_int(value, default, lo, hi, name):
 
 def download_file_from_url(url, output_path):
     """URL에서 파일을 다운로드하는 함수"""
-    validate_external_url(url)
+    pinned_ip = validate_external_url(url)
+    parsed = urllib.parse.urlparse(url)
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    # curl --resolve host:port:ip: 이 호스트/포트에 대해서는 curl 자신의 DNS
+    # 조회를 건너뛰고 지정한 IP로만 접속한다 -- validate_external_url이 검사한
+    # 바로 그 IP로 고정해서, 요청 시점에 호스트명을 다시 조회하는 TOCTOU/DNS
+    # 리바인딩 창을 없앤다. Host 헤더와 TLS SNI는 원래 호스트명 그대로 나간다.
+    resolve_arg = f"{parsed.hostname}:{port}:{pinned_ip}"
     try:
-        # wget을 사용하여 파일 다운로드.
-        # --max-redirect=0: 리다이렉트를 따라가지 않는다 -- 공인 URL이 사설
+        # --max-redirs 0: 리다이렉트를 따라가지 않는다 -- 공인 URL이 사설
         #   주소로 302를 보내는 SSRF 우회를 막는 가장 확실한 방법.
-        # --tries=1, --quota=100m: 재시도/다운로드 크기를 제한해 디스크 고갈을 막는다.
-        # "--" 뒤에 url: url이 '-'로 시작해도 wget 옵션으로 해석되지 않는다
+        # --max-filesize 100M, --max-time 30: 디스크 고갈/장시간 연결을 막는다.
+        # "--" 뒤에 url: url이 '-'로 시작해도 curl 옵션으로 해석되지 않는다
         #   (인자 주입 방지, validate_external_url의 검사와 이중 방어).
         result = subprocess.run(
-            ["wget", "-O", output_path, "--no-verbose", "--timeout=30",
-             "--tries=1", "--max-redirect=0", "--quota=100m", "--", url],
+            ["curl", "--resolve", resolve_arg, "--max-redirs", "0",
+             "--max-filesize", "100M", "--max-time", "30",
+             "--silent", "--show-error", "-o", output_path, "--", url],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=45,
         )
 
         if result.returncode == 0:
             logger.info(
-                f"✅ URL에서 파일을 성공적으로 다운로드했습니다: {url} -> {output_path}"
+                f"✅ URL에서 파일을 성공적으로 다운로드했습니다: {url} (고정 IP {pinned_ip}) -> {output_path}"
             )
             return output_path
         else:
-            logger.error(f"❌ wget 다운로드 실패: {result.stderr}")
+            logger.error(f"❌ curl 다운로드 실패 ({result.returncode}): {result.stderr}")
             raise Exception(f"URL 다운로드 실패: {result.stderr}")
     except subprocess.TimeoutExpired:
         logger.error("❌ 다운로드 시간 초과")
