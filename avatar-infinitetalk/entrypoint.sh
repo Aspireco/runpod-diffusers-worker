@@ -3,9 +3,13 @@
 # Exit immediately if a command exits with a non-zero status.
 set -e
 
-# Start ComfyUI in the background
+# Start ComfyUI in the background, bound to loopback only. The handler talks
+# to it over 127.0.0.1:8188 (see SERVER_ADDRESS in handler.py); `--listen`
+# with no address defaults to 0.0.0.0, which would expose ComfyUI's
+# unauthenticated HTTP/WebSocket API (arbitrary workflow execution, file
+# read via /view) to RunPod's shared network. Security fix, 2026-10-09.
 echo "Starting ComfyUI in the background..."
-python /ComfyUI/main.py --listen --use-sage-attention &
+python /ComfyUI/main.py --listen 127.0.0.1 --use-sage-attention &
 
 # Wait for ComfyUI to be ready
 echo "Waiting for ComfyUI to be ready..."

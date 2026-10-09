@@ -1,6 +1,8 @@
 import runpod
 import os
 import time
+import ipaddress
+import socket
 import websocket
 import base64
 import json
@@ -30,13 +32,105 @@ def truncate_base64_for_log(base64_str, max_length=50):
 server_address = os.getenv("SERVER_ADDRESS", "127.0.0.1")
 client_id = str(uuid.uuid4())
 
+# ---------------------------------------------------------------------------
+# Security hardening (2026-10-09). job["input"] is attacker-reachable: anyone
+# holding the RunPod API key can post arbitrary fields. Three defences added
+# here: SSRF/redirect-SSRF on url inputs, argument injection on the wget
+# command line, and path traversal / arbitrary file read on path inputs.
+# Also: a size cap on decoded base64 and bounds on numeric fields so a bad
+# job can't exhaust disk/RAM or run up GPU time by itself.
+# ---------------------------------------------------------------------------
+
+_ALLOWED_URL_SCHEMES = {"http", "https"}
+_MAX_INPUT_BYTES = 100 * 1024 * 1024  # 100 MB -- generous for one image/audio clip
+SANDBOX_ROOT = os.path.realpath("/tmp/infinitetalk_io")
+os.makedirs(SANDBOX_ROOT, exist_ok=True)
+
+
+def _check_ip_not_internal(ip_str, hostname):
+    ip_str = ip_str.split("%", 1)[0]  # strip an IPv6 zone id if present
+    ip = ipaddress.ip_address(ip_str)
+    mapped = ip.ipv4_mapped if hasattr(ip, "ipv4_mapped") else None
+    if mapped is not None:
+        ip = mapped
+    if (ip.is_private or ip.is_loopback or ip.is_link_local or
+            ip.is_multicast or ip.is_reserved or ip.is_unspecified):
+        raise Exception(
+            f"거부됨(SSRF 방지): {hostname}가 내부/사설 주소로 해석됩니다: {ip_str}"
+        )
+
+
+def validate_external_url(url):
+    """http(s)만 허용하고, 호스트가 사설/루프백/링크로컬/예약 대역으로 해석되면
+    거부한다 (SSRF 방지). 인자 주입 방지를 위해 '-'로 시작하는 값도 거부한다."""
+    if not isinstance(url, str) or not url.strip():
+        raise Exception("URL이 비어 있습니다")
+    if url.lstrip().startswith("-"):
+        raise Exception("URL이 '-'로 시작할 수 없습니다 (인자 주입 방지)")
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in _ALLOWED_URL_SCHEMES:
+        raise Exception(f"지원하지 않는 URL 스킴입니다: {parsed.scheme!r}")
+    hostname = parsed.hostname
+    if not hostname:
+        raise Exception("URL에 호스트가 없습니다")
+    try:
+        infos = socket.getaddrinfo(hostname, None)
+    except socket.gaierror as e:
+        raise Exception(f"DNS 확인 실패: {hostname}: {e}")
+    if not infos:
+        raise Exception(f"DNS 확인 결과가 없습니다: {hostname}")
+    for info in infos:
+        _check_ip_not_internal(info[4][0], hostname)
+    return url
+
+
+def _resolve_within_sandbox(path_str):
+    """로컬 경로 입력은 전용 샌드박스 디렉터리 내부로만 해석한다 (경로 탈출 /
+    임의 파일 읽기 방지). realpath로 심볼릭 링크까지 풀어서 접두사를 검사한다."""
+    if not isinstance(path_str, str) or not path_str.strip():
+        raise Exception("경로가 비어 있습니다")
+    relative = path_str.lstrip("/\\")
+    candidate = os.path.realpath(os.path.join(SANDBOX_ROOT, relative))
+    root_with_sep = SANDBOX_ROOT + os.sep
+    if candidate != SANDBOX_ROOT and not candidate.startswith(root_with_sep):
+        raise Exception(f"샌드박스 밖의 경로는 허용되지 않습니다: {path_str}")
+    if not os.path.isfile(candidate):
+        raise Exception(f"샌드박스 내에 파일이 없습니다: {path_str}")
+    return candidate
+
+
+def _safe_temp_dir(temp_dir):
+    """temp_dir을 항상 SANDBOX_ROOT 하위로 강제한다 (호출자가 무엇을 넘기든)."""
+    return os.path.join(SANDBOX_ROOT, os.path.basename(str(temp_dir)) or "job")
+
+
+def clamp_int(value, default, lo, hi, name):
+    """정수가 아니거나 허용 범위를 벗어나면 기본값으로 되돌린다 (리소스 고갈/
+    과금 남용 방지: width·height·max_frame은 job_input에서 그대로 온다)."""
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        logger.warning(f"⚠️ {name} 값이 올바르지 않습니다({value!r}); 기본값 {default} 사용")
+        return default
+    if value < lo or value > hi:
+        logger.warning(f"⚠️ {name}={value}가 허용 범위[{lo},{hi}]를 벗어나 기본값 {default}로 보정합니다")
+        return default
+    return value
+
 
 def download_file_from_url(url, output_path):
     """URL에서 파일을 다운로드하는 함수"""
+    validate_external_url(url)
     try:
-        # wget을 사용하여 파일 다운로드
+        # wget을 사용하여 파일 다운로드.
+        # --max-redirect=0: 리다이렉트를 따라가지 않는다 -- 공인 URL이 사설
+        #   주소로 302를 보내는 SSRF 우회를 막는 가장 확실한 방법.
+        # --tries=1, --quota=100m: 재시도/다운로드 크기를 제한해 디스크 고갈을 막는다.
+        # "--" 뒤에 url: url이 '-'로 시작해도 wget 옵션으로 해석되지 않는다
+        #   (인자 주입 방지, validate_external_url의 검사와 이중 방어).
         result = subprocess.run(
-            ["wget", "-O", output_path, "--no-verbose", "--timeout=30", url],
+            ["wget", "-O", output_path, "--no-verbose", "--timeout=30",
+             "--tries=1", "--max-redirect=0", "--quota=100m", "--", url],
             capture_output=True,
             text=True,
             timeout=60,
@@ -61,14 +155,24 @@ def download_file_from_url(url, output_path):
 def save_base64_to_file(base64_data, temp_dir, output_filename):
     """Base64 데이터를 파일로 저장하는 함수"""
     try:
-        # Base64 문자열 디코딩
-        decoded_data = base64.b64decode(base64_data)
+        if not isinstance(base64_data, str) or not base64_data:
+            raise Exception("base64 입력이 비어 있습니다")
+        # 디코딩 전에 인코딩 길이로 상한을 먼저 거른다 (디코딩 자체가 메모리를
+        # 쓰기 전에 거대한 페이로드를 거부하기 위함).
+        if len(base64_data) > (_MAX_INPUT_BYTES * 4 // 3 + 8):
+            raise Exception(f"base64 입력이 너무 큽니다 ({len(base64_data)} 문자)")
 
-        # 디렉토리가 존재하지 않으면 생성
-        os.makedirs(temp_dir, exist_ok=True)
+        # Base64 문자열 디코딩
+        decoded_data = base64.b64decode(base64_data, validate=True)
+        if len(decoded_data) > _MAX_INPUT_BYTES:
+            raise Exception(f"디코딩된 파일이 너무 큽니다 ({len(decoded_data)} bytes)")
+
+        # 디렉토리가 존재하지 않으면 생성 (항상 샌드박스 하위)
+        safe_dir = _safe_temp_dir(temp_dir)
+        os.makedirs(safe_dir, exist_ok=True)
 
         # 파일로 저장
-        file_path = os.path.abspath(os.path.join(temp_dir, output_filename))
+        file_path = os.path.join(safe_dir, output_filename)
         with open(file_path, "wb") as f:
             f.write(decoded_data)
 
@@ -82,14 +186,15 @@ def save_base64_to_file(base64_data, temp_dir, output_filename):
 def process_input(input_data, temp_dir, output_filename, input_type):
     """입력 데이터를 처리하여 파일 경로를 반환하는 함수"""
     if input_type == "path":
-        # 경로인 경우 그대로 반환
+        # 경로는 전용 샌드박스 내부에서만 해석한다 (경로 탈출/임의 파일 읽기 방지)
         logger.info(f"📁 경로 입력 처리: {input_data}")
-        return input_data
+        return _resolve_within_sandbox(input_data)
     elif input_type == "url":
-        # URL인 경우 다운로드
+        # URL인 경우 다운로드 (SSRF 방지 검증은 download_file_from_url에서 수행)
         logger.info(f"🌐 URL 입력 처리: {input_data}")
-        os.makedirs(temp_dir, exist_ok=True)
-        file_path = os.path.abspath(os.path.join(temp_dir, output_filename))
+        safe_dir = _safe_temp_dir(temp_dir)
+        os.makedirs(safe_dir, exist_ok=True)
+        file_path = os.path.join(safe_dir, output_filename)
         return download_file_from_url(input_data, file_path)
     elif input_type == "base64":
         # Base64인 경우 디코딩하여 저장
@@ -380,8 +485,9 @@ def handler(job):
 
     # 필수 필드 검증 및 기본값 설정
     prompt_text = job_input.get("prompt", "A person talking naturally")
-    width = job_input.get("width", 512)
-    height = job_input.get("height", 512)
+    # 리소스 고갈/과금 남용 방지: 해상도는 64~1536 범위로 고정
+    width = clamp_int(job_input.get("width", 512), 512, 64, 1536, "width")
+    height = clamp_int(job_input.get("height", 512), 512, 64, 1536, "height")
 
     # max_frame 설정 (입력이 없으면 오디오 길이 기반으로 자동 계산)
     max_frame = job_input.get("max_frame")
@@ -394,6 +500,9 @@ def handler(job):
         )
     else:
         logger.info(f"사용자 지정 max_frame: {max_frame}")
+    # 2000 frames @25fps = 80초 -- 실사용을 훨씬 웃도는 상한이지만, 입력이
+    # 자동 계산이든 사용자 지정이든 과도한 GPU 시간을 막기 위해 둘 다 고정한다.
+    max_frame = clamp_int(max_frame, 121, 9, 2000, "max_frame")
 
     logger.info(
         f"워크플로우 설정: prompt='{prompt_text}', width={width}, height={height}, max_frame={max_frame}"
@@ -409,7 +518,7 @@ def handler(job):
     # 동적 Force Offload 설정
     # ------------------------------------------------------------------
     # 1. 입력에서 force_offload 읽기 (기본값 True: 작은 GPU에서 OOM 방지)
-    force_offload = job_input.get("force_offload", True)
+    force_offload = bool(job_input.get("force_offload", True))
     logger.info(f"🔧 설정: force_offload={force_offload}")
 
     # 2. WanVideoSampler 노드에 force_offload 파라미터 주입
