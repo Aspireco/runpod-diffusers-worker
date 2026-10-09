@@ -61,6 +61,21 @@ RUN wget -q https://huggingface.co/Kijai/WanVideo_comfy/resolve/main/umt5-xxl-en
 RUN wget -q https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/clip_vision/clip_vision_h.safetensors -O /ComfyUI/models/clip_vision/clip_vision_h.safetensors
 RUN wget -q https://huggingface.co/Kijai/MelBandRoFormer_comfy/resolve/main/MelBandRoformer_fp16.safetensors -O /ComfyUI/models/diffusion_models/MelBandRoformer_fp16.safetensors
 
+# ComfyUI-Manager's requirements.txt (installed above) pulls a bare, unpinned
+# `transformers`, which resolves to the latest PyPI release at image-build
+# time -- newer than the API that ComfyUI-WanVideoWrapper's vendored
+# multitalk/wav2vec2.py subclass was written against (it reads
+# self.config.use_return_dict, a transformers property since deprecated).
+# Live symptom, found 2026-10-09 running a real job through this image: the
+# wav2vec2 encoder's output_hidden_states=True is silently dropped,
+# hidden_states comes back None, and multitalk/nodes.py crashes on
+# `embeddings.hidden_states[1:]` with "'NoneType' object is not subscriptable"
+# -- after the image/audio load, so it looks like a workflow bug, not a
+# dependency-version one. Pin to the version this project's own InfiniteTalk
+# base build (base.Dockerfile) uses. This RUN is placed after every weight
+# download so changing it never invalidates (and re-downloads) those layers.
+RUN pip install transformers==4.48.2 && \
+    python3 -c "import transformers, diffusers; print('pinned: transformers', transformers.__version__, '/ diffusers', diffusers.__version__)"
 
 COPY . .
 RUN chmod +x /entrypoint.sh
