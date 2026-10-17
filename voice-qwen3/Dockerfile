@@ -1,10 +1,15 @@
-# Qwen3-TTS 1.7B CustomVoice without ComfyUI (see handler.py). Weights come from the Azure Files share
-# (/runpod-volume/qwen3-tts/1.7b-customvoice), staged by the GPU fleet's fetch job; the image holds none.
+# Qwen3-TTS 1.7B without ComfyUI (see handler.py): CustomVoice, VoiceDesign and Base (cloning)
+# share this one image, selected at runtime by QWEN_MODE (custom | design | clone). Weights come
+# from the Azure Files share, staged by each mode's own fetch job (gpu/manifests/voice-qwen3.tsv,
+# voice-design.tsv, voice-clone-qwen.tsv); the image holds none. MODEL_DIR below is the default for
+# QWEN_MODE=custom (the original, still-default lane) -- design and clone lanes set their own
+# MODEL_DIR, or handler.py falls back to each mode's own default under /runpod-volume/qwen3-tts/.
 FROM runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404
 
 ENV HF_HUB_ENABLE_HF_TRANSFER=0 \
     HF_HUB_OFFLINE=1 \
     HF_HUB_DISABLE_TELEMETRY=1 \
+    QWEN_MODE="custom" \
     MODEL_DIR="/runpod-volume/qwen3-tts/1.7b-customvoice" \
     DTYPE="float32" \
     PYTHONUNBUFFERED=1
