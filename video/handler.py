@@ -113,6 +113,16 @@ try:
     PIPE.set_progress_bar_config(disable=True)
 except Exception:
     pass
+# Cosmos3OmniPipeline makes sound only when asked (`enable_sound`, default False in diffusers 0.39), and only with
+# the checkpoint's sound_tokenizer loaded. Azure proof 2026-10-17: without the flag the clip came back silent.
+try:
+    _CALL = _inspect.signature(PIPE.__call__).parameters
+except (TypeError, ValueError):
+    _CALL = {}
+_SOUND_TOK = getattr(PIPE, "sound_tokenizer", None)
+CAN_SOUND = "enable_sound" in _CALL and _SOUND_TOK is not None
+SOUND_RATE = int(getattr(getattr(_SOUND_TOK, "config", None), "sampling_rate", 0) or 16000)
+print(f"[boot] sound {'on' if CAN_SOUND else 'off'} ({SOUND_RATE} Hz)", flush=True)
 print(f"[boot] ready in {time.time() - _t0:.1f}s", flush=True)
 
 
@@ -139,7 +149,11 @@ def _sound_to_wav(sound, sample_rate: int = 16000):
     try:
         import numpy as np
         import wave
+        if isinstance(sound, (list, tuple)):          # one clip per prompt; this handler sends one
+            sound = sound[0]
         a = sound.detach().float().cpu().numpy() if hasattr(sound, "detach") else np.asarray(sound)
+        if a.ndim == 3:                               # [B, C, N]
+            a = a[0]
         if a.ndim == 1:
             a = a[None, :]
         ch, _ = a.shape
@@ -220,6 +234,8 @@ def handler(job):
         seed = int(job_input.get("seed", -1))
         if seed >= 0:
             kwargs["generator"] = torch.Generator(device="cuda").manual_seed(seed)
+        if CAN_SOUND and job_input.get("sound", True) is not False:
+            kwargs["enable_sound"] = True
 
         result = PIPE(**kwargs)
         # Cosmos3OmniPipelineOutput exposes `video`, NOT `frames` -- the older
@@ -243,7 +259,7 @@ def handler(job):
         _wav = None
         _sound = getattr(result, "sound", None)
         if _sound is not None:
-            _wav = _sound_to_wav(_sound)
+            _wav = _sound_to_wav(_sound, SOUND_RATE)
             if _wav:
                 print("[gen] muxing the model's generated soundtrack", flush=True)
         mp4 = _frames_to_mp4(out_frames, fps, wav_path=_wav)
