@@ -48,7 +48,7 @@ RUN pip install --no-cache-dir -c /tmp/constraints.txt \
       "transformers>=4.50.3,<5" \
       "huggingface-hub<1.0" \
       "accelerate" \
-      "peft>=0.15" \
+      "peft>=0.15,<0.19" \
       "sentencepiece" \
       "protobuf" \
       "ftfy" \
@@ -93,6 +93,11 @@ print('peft', peft.__version__, '| Wan dual-expert LoRA loading OK')"
 # torchao's. The handler also try/excepts the import and reports the dtype that actually
 # ran, so a runtime failure degrades to bf16 honestly instead of mislabelling the result.
 RUN pip install --no-cache-dir -c /tmp/constraints.txt "torchao==0.13.0"
+
+# peft 0.19 raised its torchao floor to 0.16 and REFUSES to load any LoRA beside an older torchao ("Found an
+# incompatible version of torchao"), so the pin above caps peft below 0.19. Azure T2V lane, 2026-10-17: the image had
+# pulled peft 0.21, the lightx2v LoRAs never loaded, and the job ran the plain 40-step model (30 min, CA$4.98).
+RUN python -c "import peft, peft.import_utils as u; u.is_torchao_available(); print('peft', peft.__version__, 'accepts the torchao beside it')"
 
 # The check that would have caught the original failure: does diffusers STILL import once
 # torchao is present, and does the fp8 entry point actually resolve?
