@@ -171,8 +171,13 @@ def _fetch_to_file(src: str, dest_path: str, timeout: float = 60.0) -> None:
         f.write(data)
 
 
+# The system ffmpeg (apt, with libx264), never conda's: the PyTorch base image puts /opt/conda/bin first on PATH,
+# and conda's ffmpeg has no libx264 ("Unrecognized option 'crf'", first Azure proof 2026-10-17).
+FFMPEG = "/usr/bin/ffmpeg" if os.path.exists("/usr/bin/ffmpeg") else "ffmpeg"
+
+
 def _run_ffmpeg(args: list) -> None:
-    proc = subprocess.run(["ffmpeg", *args], capture_output=True, text=True)
+    proc = subprocess.run([FFMPEG, *args], capture_output=True, text=True)
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg failed ({proc.returncode}): {proc.stderr[-2000:]}")
 

@@ -84,6 +84,8 @@ RUN curl -fL --retry 3 --retry-delay 5 -o musetalk/utils/face_detection/detectio
 
 COPY build_check.py /build_check.py
 RUN python /build_check.py
+# the handler encodes with /usr/bin/ffmpeg: fail the build, not a billed GPU, if it cannot do h264
+RUN /usr/bin/ffmpeg -hide_banner -encoders 2>/dev/null | grep -q libx264 && echo "system ffmpeg has libx264"
 
 COPY handler.py /handler.py
 RUN python -c "import ast; ast.parse(open('/handler.py').read()); print('handler parses OK')"
