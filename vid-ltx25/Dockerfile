@@ -37,18 +37,10 @@ RUN pip install --no-cache-dir -c /tmp/constraints.txt \
       "pillow" \
       "runpod>=1.10.1"
 
-# Fail the BUILD, not a billed GPU, if torch was swapped or the LTX-2 classes are missing.
-RUN python -c "import torch; v=torch.__version__; print('torch', v); assert 'cu13' not in v, f'torch replaced: {v}'"
-RUN python -c "\
-import diffusers, transformers, av; \
-from diffusers import LTX2Pipeline, LTX2ConditionPipeline; \
-from diffusers.pipelines.ltx2 import LTX2LatentUpsamplePipeline; \
-from diffusers.pipelines.ltx2.latent_upsampler import LTX2LatentUpsamplerModel; \
-from diffusers.pipelines.ltx2.pipeline_ltx2_condition import LTX2VideoCondition; \
-from diffusers.pipelines.ltx2.utils import DISTILLED_SIGMA_VALUES, STAGE_2_DISTILLED_SIGMA_VALUES; \
-from diffusers.utils import encode_video; \
-from transformers.models.gemma4_unified import configuration_gemma4_unified; \
-print('diffusers', diffusers.__version__, '| transformers', transformers.__version__, '| av', av.__version__, '| LTX-2.5 classes OK')"
+# Fail the BUILD, not a billed GPU, if torch was swapped or the LTX-2 classes are missing (a file, because ACR's
+# dependency scanner reads continuation lines that start with "from" as FROM instructions).
+COPY build_check.py /build_check.py
+RUN python /build_check.py
 
 COPY handler.py /handler.py
 RUN python -c "import ast; ast.parse(open('/handler.py').read()); print('handler parses OK')"
