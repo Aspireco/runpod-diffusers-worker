@@ -55,22 +55,15 @@ RUN pip install --no-cache-dir -c /tmp/constraints.txt \
       "imageio" \
       "runpod>=1.10.1"
 
-# Fail the BUILD, not a billing GPU, if torch was swapped or the MoE classes are absent.
+# Fail the BUILD, not a billing GPU, if torch was swapped or the MoE classes are absent. The checks live in
+# build_check.py: ACR's dependency scanner reads a RUN continuation line that starts with `from` as a FROM.
+COPY build_check.py /build_check.py
 RUN python -c "import torch; v=torch.__version__; print('torch', v); assert 'cu13' not in v, f'torch replaced: {v}'"
-RUN python -c "\
-import diffusers, inspect; print('diffusers', diffusers.__version__); \
-from diffusers import AutoencoderKLWan, WanImageToVideoPipeline; \
-p = set(inspect.signature(WanImageToVideoPipeline.__init__).parameters); \
-assert 'transformer_2' in p, f'diffusers {diffusers.__version__} has no MoE second expert: {sorted(p)}'; \
-print('Wan MoE pipeline OK, dual-expert slot present')"
+RUN python /build_check.py pipeline
 # The lightx2v 4-step LoRA needs one adapter per expert; load_into_transformer_2 is the
 # switch that puts the low-noise LoRA on the second one. It arrives via **kwargs, so the
 # source is checked rather than the signature. peft must import or no LoRA loads at all.
-RUN python -c "\
-import inspect, peft; from diffusers import WanImageToVideoPipeline; \
-src = inspect.getsource(WanImageToVideoPipeline.load_lora_weights); \
-assert 'load_into_transformer_2' in src, 'diffusers cannot load a LoRA into transformer_2'; \
-print('peft', peft.__version__, '| Wan dual-expert LoRA loading OK')"
+RUN python /build_check.py lora
 
 
 # torchao LAST, in its own layer, and pinned -- all three deliberate.
@@ -97,15 +90,8 @@ RUN pip install --no-cache-dir -c /tmp/constraints.txt "torchao==0.13.0"
 # peft 0.19 raised its torchao floor to 0.16 and REFUSES to load any LoRA beside an older torchao ("Found an
 # incompatible version of torchao"), so the pin above caps peft below 0.19. Azure T2V lane, 2026-10-17: the image had
 # pulled peft 0.21, the lightx2v LoRAs never loaded, and the job ran the plain 40-step model (30 min, CA$4.98).
-RUN python -c "import peft, peft.import_utils as u; u.is_torchao_available(); print('peft', peft.__version__, 'accepts the torchao beside it')"
-
-# The check that would have caught the original failure: does diffusers STILL import once
-# torchao is present, and does the fp8 entry point actually resolve?
-RUN python -c "\
-import torch; assert 'cu13' not in torch.__version__, f'torch replaced: {torch.__version__}'; \
-from diffusers import AutoencoderKLWan, WanImageToVideoPipeline; \
-import torchao; from torchao.quantization import float8_weight_only, quantize_; \
-print('torchao', torchao.__version__, 'coexists with diffusers; fp8 arm available')"
+# This also checks diffusers STILL imports once torchao is present, and that the fp8 entry point resolves.
+RUN python /build_check.py torchao
 COPY handler.py /handler.py
 RUN python -c "import ast; ast.parse(open('/handler.py').read()); print('handler parses OK')"
 
