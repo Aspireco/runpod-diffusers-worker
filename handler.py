@@ -82,12 +82,8 @@ except Exception:
 print(f"[boot] ready in {time.time() - _t0:.1f}s", flush=True)
 
 
-def _load_image(job_input):
-    """Source image for edit-capable models. Absent for plain text-to-image."""
-    src = job_input.get("image_url") or job_input.get("image_base64") or job_input.get("image")
-    if not src:
-        return None
-    import io
+def _decode(src):
+    """One image from a URL, a data URL or bare base64."""
     import urllib.request
     from PIL import Image
     if src.startswith("http"):
@@ -96,7 +92,45 @@ def _load_image(job_input):
     else:
         raw = src.split(",", 1)[1] if src.startswith("data:") else src
         data = base64.b64decode(raw)
-    return Image.open(io.BytesIO(data)).convert("RGB")
+    return Image.open(io.BytesIO(data))
+
+
+def _load_image(job_input):
+    """Source image for edit-capable models. Absent for plain text-to-image."""
+    src = job_input.get("image_url") or job_input.get("image_base64") or job_input.get("image")
+    return _decode(src).convert("RGB") if src else None
+
+
+def _load_references(job_input):
+    """FLUX.2-klein's multi-reference edit: extra photos the edit may draw on (a face, a backdrop, a product)."""
+    return [_decode(s).convert("RGB") for s in (job_input.get("references") or [])][:MAX_REFERENCES]
+
+
+def _load_mask(job_input):
+    """White where the model may paint, black where the photo must stay (diffusers' inpaint convention)."""
+    src = job_input.get("mask_base64") or job_input.get("mask")
+    return _decode(src).convert("L") if src else None
+
+
+# FLUX.2-klein takes a few references beside the photo it edits (BFL: up to 4 images in all).
+MAX_REFERENCES = 3
+_INPAINT = None
+
+
+def _inpaint_pipe():
+    """Flux2KleinInpaintPipeline on the weights already loaded: a masked edit leaves the unmasked photo alone,
+    which gpt-image-2's mask does not (an "extend" edit there redrew the product as another maker's, 2026-10-17)."""
+    global _INPAINT
+    if _INPAINT is None:
+        from diffusers import Flux2KleinInpaintPipeline
+        _INPAINT = Flux2KleinInpaintPipeline.from_pipe(PIPE)
+    return _INPAINT
+
+
+def _sixteen(img):
+    """FLUX wants sides in multiples of 16: trim the odd pixels off the right and bottom."""
+    w, h = img.size
+    return img.crop((0, 0, w - w % 16, h - h % 16)) if (w % 16 or h % 16) else img
 
 
 def handler(job):
@@ -124,8 +158,24 @@ def handler(job):
     # Edit models (Qwen-Image-Edit, FLUX.2 klein editing) take a source image and derive
     # their own output size from it -- passing width/height alongside makes them error.
     source = _load_image(job_input)
-    if source is not None:
-        kwargs["image"] = source
+    refs = _load_references(job_input)
+    mask = _load_mask(job_input)
+    pipe = PIPE
+    if mask is not None:
+        # A masked edit (extend a photo, replace one region): only klein has the inpaint pipeline here.
+        if source is None:
+            return {"error": "a mask needs the image it masks"}
+        if "klein" not in MODEL_ID.lower():
+            return {"error": f"{MODEL_ID} takes no mask on this worker"}
+        pipe = _inpaint_pipe()
+        source = _sixteen(source)
+        width, height = source.size
+        kwargs.update(image=source, mask_image=mask.resize(source.size), width=width, height=height,
+                      strength=float(job_input.get("strength", 1.0)))
+        if refs:
+            kwargs["image_reference"] = refs if len(refs) > 1 else refs[0]
+    elif source is not None:
+        kwargs["image"] = [source, *refs] if refs else source
         width, height = source.size
     else:
         kwargs["width"] = width
@@ -138,12 +188,12 @@ def handler(job):
 
     started = time.time()
     try:
-        image = PIPE(**kwargs).images[0]
+        image = pipe(**kwargs).images[0]
     except TypeError:
         # A few pipelines reject negative_prompt outright; retry without it rather than
         # failing the job over an optional field.
         kwargs.pop("negative_prompt", None)
-        image = PIPE(**kwargs).images[0]
+        image = pipe(**kwargs).images[0]
 
     buf = io.BytesIO()
     image.save(buf, format="PNG")
