@@ -169,14 +169,11 @@ sz=os.path.getsize(n); assert sz > 60_000_000, f'RealESRGAN checkpoint too small
 # hy3dshape.rembg.BackgroundRemover's new_session() with no model_name override, i.e. "u2net").
 # Baked in at the EXACT path the installed rembg version's own session class resolves, discovered
 # by asking that class directly rather than hardcoding a path that drifts across rembg releases.
-RUN python -c "\
-from rembg.sessions.u2net import U2netSession as S; \
-import os, urllib.request; \
-d = S.model_dir(); os.makedirs(d, exist_ok=True); \
-dest = os.path.join(d, S.name() + '.onnx'); \
-urllib.request.urlretrieve('https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2net.onnx', dest); \
-sz = os.path.getsize(dest); assert sz > 150_000_000, f'u2net.onnx too small: {sz} bytes'; \
-print('u2net.onnx baked at', dest, sz, 'bytes')"
+# A file, not a RUN python -c "..." block: this needs a `from rembg.sessions.u2net import ...`
+# line, and ACR's dependency scanner reads any line starting with `from` as a FROM instruction and
+# fails the build before it begins -- caught live on this exact line, ACR run ch3x, 2026-10-18.
+COPY bake_u2net.py /bake_u2net.py
+RUN python /bake_u2net.py
 
 # safe_fetch.py: the SSRF guard for any job input that is an https:// URL rather than inline data
 # (job inputs can arrive from an LLM agent, not just a human -- see its own module docstring).
