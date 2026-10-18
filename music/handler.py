@@ -47,6 +47,11 @@ import tempfile
 import time
 import urllib.request
 
+import numpy as np
+import soundfile as sf
+
+FADE_SECONDS = 1.5
+
 CHECKPOINT_DIR = os.environ.get("ACESTEP_CHECKPOINTS_DIR", "/runpod-volume/acestep-v15/checkpoints")
 CONFIG_PATH = os.environ.get("ACESTEP_CONFIG_PATH", "acestep-v15-turbo")
 
@@ -128,6 +133,11 @@ def handler(job):
         lyrics = "[Instrumental]"
 
     duration = float(job_input.get("duration", 30))
+    # ACE-Step writes a song with an ending: asked for 20 s, the first Azure proof (2026-10-18) gave 16 s of music
+    # and 4 s of silence. An ad bed has to fill its length, so ask for about a fifth more (at least 4 s) and trim back
+    # to the length asked for with a fade-out.
+    requested = duration
+    duration = min(600.0, requested + max(4.0, requested * 0.2))
     steps = int(job_input.get("infer_step", job_input.get("num_inference_steps", CFG["steps"])))
     guidance = float(job_input.get("guidance_scale", 7.0))  # turbo ignores this and forces 1.0 itself
     seed = int(job_input.get("seed", -1))
@@ -171,9 +181,18 @@ def handler(job):
             return {"error": result.error or "generation produced no audio"}
 
         audio = result.audios[0]
-        with open(audio["path"], "rb") as f:
+        sr = int(audio["sample_rate"])
+        wave = audio["tensor"].float().cpu().numpy()          # (channels, samples)
+        keep = int(round(requested * sr))
+        if wave.shape[-1] > keep:
+            wave = wave[..., :keep].copy()
+            fade = min(int(FADE_SECONDS * sr), keep)
+            wave[..., -fade:] *= np.linspace(1.0, 0.0, fade, dtype=wave.dtype)
+        fitted = os.path.join(tmp_dir, "bed.wav")
+        sf.write(fitted, np.clip(wave, -1.0, 1.0).T, sr, subtype="PCM_16")
+        with open(fitted, "rb") as f:
             audio_b64 = base64.b64encode(f.read()).decode()
-        actual_duration = audio["tensor"].shape[-1] / audio["sample_rate"]
+        actual_duration = wave.shape[-1] / sr
 
         return {
             "audio_url": "data:audio/wav;base64," + audio_b64,
