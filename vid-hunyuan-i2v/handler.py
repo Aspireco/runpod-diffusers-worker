@@ -18,7 +18,7 @@ LICENCE - READ BEFORE PRODUCTION USE. The repo loaded here is a community re-upl
 declares `base_model: tencent/HunyuanVideo-I2V` and carries **no licence tag of its own**. A
 missing tag on a re-upload changes nothing: the weights are Tencent's and the **Tencent Hunyuan
 Community License** governs. Its Territory is worldwide **excluding the European Union, the
-United Kingdom and South Korea** -- the United States IS inside the grant. ğ4(c) binds *Outputs*,
+United Kingdom and South Korea** -- the United States IS inside the grant. S4(c) binds *Outputs*,
 not just weights: generated video may not be displayed outside the Territory. See README.md's
 licence table (this is why the image lives only in azswmcacr/East US 2 and runs only in the new
 Canada Central environment).
@@ -30,7 +30,8 @@ import os
 import subprocess
 import tempfile
 import time
-import urllib.request
+
+import safe_fetch
 
 # Before any heavy import, so "no logs at all" (died pre-Python) stays distinguishable from
 # "printed then stopped" (died during import). Those need opposite fixes.
@@ -116,17 +117,17 @@ print(f"[boot] ready in {time.time() - _t0:.1f}s", flush=True)
 
 
 def _load_image(job_input):
+    """data URL / raw base64 / https:// URL -> PIL Image. Fetching a URL goes through
+    safe_fetch.fetch_image_bytes, not urllib directly: job inputs can arrive from an LLM agent,
+    so a URL must never be able to reach an internal address (cloud metadata, localhost, RFC1918,
+    link-local -- see safe_fetch.py's module docstring). Raises ValueError on a refused or
+    unreachable source; the caller is responsible for turning that into {"error": ...}."""
     src = (job_input.get("image_url") or job_input.get("image_base64")
            or job_input.get("image"))
     if not src:
         return None
     from PIL import Image
-    if src.startswith("http"):
-        with urllib.request.urlopen(src, timeout=90) as r:
-            data = r.read()
-    else:
-        raw = src.split(",", 1)[1] if src.startswith("data:") else src
-        data = base64.b64decode(raw, validate=True)
+    data = safe_fetch.fetch_image_bytes(src)
     return Image.open(io.BytesIO(data)).convert("RGB")
 
 
@@ -170,7 +171,10 @@ def handler(job):
     prompt = (job_input.get("prompt") or "").strip()
     if not prompt:
         return {"error": "prompt is required"}
-    image = _load_image(job_input)
+    try:
+        image = _load_image(job_input)
+    except ValueError as e:
+        return {"error": f"could not load image: {e}"}
     if image is None:
         return {"error": "this lane is image-to-video: supply image, image_base64 (data URL or "
                          "raw base64) or image_url"}

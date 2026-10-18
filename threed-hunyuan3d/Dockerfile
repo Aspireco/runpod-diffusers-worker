@@ -4,9 +4,9 @@
 #
 # LICENCE -- READ README.md FIRST. Tencent Hunyuan 3D 2.1 Community License: Territory is
 # worldwide EXCLUDING the European Union, United Kingdom and South Korea, and that exclusion
-# binds Outputs (generated meshes) too, not just the weights (LICENSE SS5(c)). Outputs may not be
-# used to train another AI model (SS5(b)). Above 1,000,000 monthly active users, a separate licence
-# is required (SS4) -- a much lower bar than the 100,000,000 that the Llama-style licences and
+# binds Outputs (generated meshes) too, not just the weights (LICENSE S5(c)). Outputs may not be
+# used to train another AI model (S5(b)). Above 1,000,000 monthly active users, a separate licence
+# is required (S4) -- a much lower bar than the 100,000,000 that the Llama-style licences and
 # Tencent's OWN video/LLM licences use (see workers/vid-hunyuan-i2v/README.md for that contrast).
 # This is exactly why this image is built only in azswmcacr (East US 2, inside the Territory) and
 # runs only in the Canada Central GPU environment.
@@ -178,6 +178,11 @@ urllib.request.urlretrieve('https://github.com/danielgatis/rembg/releases/downlo
 sz = os.path.getsize(dest); assert sz > 150_000_000, f'u2net.onnx too small: {sz} bytes'; \
 print('u2net.onnx baked at', dest, sz, 'bytes')"
 
+# safe_fetch.py: the SSRF guard for any job input that is an https:// URL rather than inline data
+# (job inputs can arrive from an LLM agent, not just a human -- see its own module docstring).
+# Copied in before build_check.py so build_check's own safe_fetch subcommand can import it.
+COPY safe_fetch.py /safe_fetch.py
+
 # Fail the BUILD, not a billed GPU. build_check.py imports everything the handler imports and
 # constructs whatever can be constructed on CPU.
 COPY build_check.py /build_check.py
@@ -186,6 +191,7 @@ RUN python /build_check.py imports
 RUN python /build_check.py shape
 RUN python /build_check.py paint
 RUN python /build_check.py extensions
+RUN python /build_check.py safe_fetch
 
 COPY handler.py /handler.py
 RUN python -c "import ast; ast.parse(open('/handler.py').read()); print('handler parses OK')"

@@ -4,6 +4,8 @@
     python /build_check.py shape        hy3dshape's pipeline + postprocessor API shape resolves
     python /build_check.py paint        hy3dpaint's config + pipeline API shape resolves
     python /build_check.py extensions   custom_rasterizer (CUDA) and mesh_inpaint_processor (C++) import
+    python /build_check.py safe_fetch   the SSRF guard refuses http/localhost/loopback/link-local/
+                                         private-IP targets and still accepts a data: URL
 
 A file rather than `RUN python -c "..."` continuation lines: ACR's dependency scanner reads any
 line that starts with `from` as a FROM instruction and fails the build before it begins
@@ -96,6 +98,37 @@ def extensions() -> None:
           "DifferentiableRenderer.mesh_inpaint_processor.meshVerticeInpaint")
 
 
+def safe_fetch_check() -> None:
+    """Job inputs can arrive from an LLM agent, so a URL in the input must never reach an
+    internal address. Checked on literal addresses, not live DNS, so this runs with no network
+    on the ACR build agent -- getaddrinfo resolves a literal IP string and "localhost" without
+    touching the network either way."""
+    import safe_fetch
+
+    for bad in (
+        "http://example.com/x.png",
+        "https://localhost/x.png",
+        "https://127.0.0.1/x.png",
+        "https://169.254.169.254/latest/meta-data/",
+        "https://10.0.0.1/x.png",
+    ):
+        try:
+            safe_fetch.fetch_image_bytes(bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"safe_fetch accepted a target it must refuse: {bad}")
+
+    # a 1x1 PNG -- proves the data: URL path still works, not just that the refusals do
+    ok = safe_fetch.fetch_image_bytes(
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+        "+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )
+    assert len(ok) > 0, "safe_fetch failed to decode a valid data: URL"
+    print("safe_fetch OK: refuses http/localhost/loopback/link-local/private-IP, accepts data: URLs")
+
+
 if __name__ == "__main__":
     assert "cu13" not in torch.__version__, f"torch replaced: {torch.__version__}"
-    {"imports": imports, "shape": shape, "paint": paint, "extensions": extensions}[sys.argv[1]]()
+    {"imports": imports, "shape": shape, "paint": paint, "extensions": extensions,
+     "safe_fetch": safe_fetch_check}[sys.argv[1]]()

@@ -51,7 +51,15 @@ Input (`job["input"]`):
 ```
 
 - `image` (also accepted as `image_base64` or `image_url`): a data URL, raw base64, or an
-  `https://` URL.
+  `https://` URL. **URL fetches go through `safe_fetch.py`, an SSRF guard** — job inputs can
+  arrive from an LLM agent, not just a human, so a URL must never be able to reach an internal
+  address (cloud metadata, localhost, RFC1918, link-local). `http://` is refused outright; an
+  `https://` host is resolved and every resolved address must be public, then the connection goes
+  to that validated address directly (not re-resolved), with TLS SNI still the original hostname.
+  **Redirects are refused, not followed** — a URL from a host that 302s (GitHub release assets do
+  this; some signed-URL patterns do too) comes back as `{"error": "could not load image:
+  redirects are not followed; fetch the final URL directly"}`. Sending the image inline as a data
+  URL always works and has none of this limitation.
 - `num_frames` (default **129**, ~5.4s at the model's native 24fps): rounded to the nearest valid
   `4n+1` value — the causal temporal VAE encodes in groups of four plus a keyframe. 129 is itself
   already `4*32+1`. (The pre-Azure RunPod worker defaulted to 121; 129 is the figure in this task's
@@ -158,4 +166,5 @@ serverless loop with no queue behind it.
 |---|---|
 | `Dockerfile` | the image; built on ACR as `azswmcacr.azurecr.io/hunyuan-i2v-worker` |
 | `handler.py` | the serverless worker: boot-time weight check + pipeline load, per-job image fit + generate + encode |
-| `build_check.py` | build-time checks: every import, the diffusers pipeline/transformer API shape |
+| `safe_fetch.py` | the SSRF guard for `image_url`/`https://` job inputs — refuses non-public addresses and redirects |
+| `build_check.py` | build-time checks: every import, the diffusers pipeline/transformer API shape, the SSRF guard |

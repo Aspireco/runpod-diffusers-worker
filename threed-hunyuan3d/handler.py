@@ -58,7 +58,8 @@ import os
 import sys
 import tempfile
 import time
-import urllib.request
+
+import safe_fetch
 
 print("[boot] hunyuan3d handler starting", flush=True)
 
@@ -160,16 +161,16 @@ print(f"[boot] ready in {time.time() - _t0:.1f}s total", flush=True)
 
 
 def _load_image(job_input):
+    """data URL / raw base64 / https:// URL -> PIL Image. Fetching a URL goes through
+    safe_fetch.fetch_image_bytes, not urllib directly: job inputs can arrive from an LLM agent,
+    so a URL must never be able to reach an internal address (cloud metadata, localhost, RFC1918,
+    link-local -- see safe_fetch.py's module docstring). Raises ValueError on a refused or
+    unreachable source; the caller is responsible for turning that into {"error": ...}."""
     src = job_input.get("image") or job_input.get("image_url") or job_input.get("image_base64")
     if not src:
         return None
     from PIL import Image
-    if src.startswith("http"):
-        with urllib.request.urlopen(src, timeout=90) as r:
-            data = r.read()
-    else:
-        raw = src.split(",", 1)[1] if src.startswith("data:") else src
-        data = base64.b64decode(raw, validate=True)
+    data = safe_fetch.fetch_image_bytes(src)
     return Image.open(io.BytesIO(data))
 
 
@@ -186,7 +187,10 @@ def _convert_to_glb_pbr(obj_path: str, glb_path: str) -> None:
 
 def handler(job):
     job_input = job.get("input") or {}
-    image = _load_image(job_input)
+    try:
+        image = _load_image(job_input)
+    except ValueError as e:
+        return {"error": f"could not load image: {e}"}
     if image is None:
         return {"error": "image is required (data URL, raw base64, or an https:// URL)"}
 

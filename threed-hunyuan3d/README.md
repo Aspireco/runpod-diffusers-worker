@@ -54,7 +54,15 @@ Input (`job["input"]`):
 }
 ```
 
-- `image`: data URL, raw base64, or an `https://` URL. Required.
+- `image`: data URL, raw base64, or an `https://` URL. Required. **URL fetches go through
+  `safe_fetch.py`, an SSRF guard** — job inputs can arrive from an LLM agent, not just a human,
+  so a URL must never be able to reach an internal address (cloud metadata, localhost, RFC1918,
+  link-local). `http://` is refused outright; an `https://` host is resolved and every resolved
+  address must be public, then the connection goes to that validated address directly (not
+  re-resolved), with TLS SNI still the original hostname. **Redirects are refused, not
+  followed** — a URL from a host that 302s comes back as `{"error": "could not load image:
+  redirects are not followed; fetch the final URL directly"}`. Sending the image inline as a data
+  URL always works and has none of this limitation.
 - `remove_background` (default **true**): runs `hy3dshape.rembg.BackgroundRemover` (u2net) before
   shape generation. See "Known deviations" below — the official demo/server code has a bug that
   means this never actually ran upstream; it is wired for real here.
@@ -231,4 +239,5 @@ serverless loop with no queue behind it.
 |---|---|
 | `Dockerfile` | the image; built on ACR as `azswmcacr.azurecr.io/hunyuan3d-worker`; vendors the official repo at `/opt/hunyuan3d-src`, compiles `custom_rasterizer` + `mesh_inpaint_processor`, bakes in RealESRGAN + u2net |
 | `handler.py` | the serverless worker: boot-time weight check, offline `snapshot_download` redirect, shape + face-reduce + paint + pygltflib GLB export |
-| `build_check.py` | build-time checks: every pip import, the shape/paint API shape, the two compiled extensions |
+| `safe_fetch.py` | the SSRF guard for the `image` job input when it's an `https://` URL — refuses non-public addresses and redirects |
+| `build_check.py` | build-time checks: every pip import, the shape/paint API shape, the two compiled extensions, the SSRF guard |

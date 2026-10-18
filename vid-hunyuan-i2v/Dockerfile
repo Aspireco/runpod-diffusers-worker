@@ -53,12 +53,18 @@ RUN pip install --no-cache-dir -c /tmp/constraints.txt \
       "imageio" \
       "runpod>=1.10.1"
 
+# safe_fetch.py: the SSRF guard for any job input that is an https:// URL rather than inline data
+# (job inputs can arrive from an LLM agent, not just a human -- see its own module docstring).
+# Copied in before build_check.py so build_check's own safe_fetch subcommand can import it.
+COPY safe_fetch.py /safe_fetch.py
+
 # Fail the BUILD, not a billed GPU: a file, not RUN python -c "..." continuation lines -- ACR's
 # dependency scanner reads any line starting with `from` as a FROM instruction (vid-wan-a14b,
 # 2026-10-17).
 COPY build_check.py /build_check.py
 RUN python /build_check.py imports
 RUN python /build_check.py pipeline
+RUN python /build_check.py safe_fetch
 
 COPY handler.py /handler.py
 RUN python -c "import ast; ast.parse(open('/handler.py').read()); print('handler parses OK')"
