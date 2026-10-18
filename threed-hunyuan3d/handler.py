@@ -35,12 +35,14 @@ conversion via `hy3dpaint.convert_utils.create_glb_with_pbr_materials` -- a `pyg
 builder that constructs the glTF PBR material graph explicitly from the separate albedo/
 metallic/roughness image files. That is the more deliberate, production-facing choice (it is
 literally what Tencent's own API server ships), so this handler follows it, via
-`_convert_to_glb_pbr()` below. `bpy` is still a real import-time dependency regardless (see
-Dockerfile's "bpy is a real dependency" comment) because `MeshRender.save_mesh()` -- called
+`_convert_to_glb_pbr()` below. Something importable as `bpy` is still required regardless (see
+the Dockerfile's `bpy_stub.py` comment) because `MeshRender.save_mesh()` -- called
 unconditionally inside the paint pipeline, not gated by `save_glb` -- delegates to a module-level
 `save_mesh()` function that only exists if `DifferentiableRenderer/mesh_utils.py` (which starts
-with a bare `import bpy`) imported successfully. This handler just never calls the ONE function
-in that module that actually drives Blender's operators.
+with a bare `import bpy`) imported successfully. The real `bpy` PyPI package has no wheel for
+this image's Python (3.12), so a small stub is installed as `bpy` instead -- this handler never
+calls the one function in that module (`convert_obj_to_glb`) that would actually need real
+Blender behind it, and the stub raises a clear error if anything ever does.
 
 A second, independent fix from the official code: both `demo.py` and `model_worker.py` write
 `image = image.convert("RGBA")` and THEN check `if image.mode == "RGB":` before running

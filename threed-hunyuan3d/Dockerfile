@@ -55,8 +55,9 @@ ENV HF_HOME=/tmp/hf_home \
 # (Tencent-Hunyuan/Hunyuan3D-2.1/docker/Dockerfile) installs it immediately before the same
 # custom_rasterizer compile step; cheap enough to include rather than find out the hard way that
 # grid_neighbor.cpp wants Eigen headers. The libgl1/libegl1/libxrender1/libxi6/libsm6/libxext6
-# family: `bpy` (Blender's Python module, see "bpy is a real dependency" below) links against
-# GL/X11 shared libraries even in headless/background mode, per the same official Dockerfile.
+# family: kept defensively even though bpy is stubbed out below (not real Blender, so it no
+# longer needs them) -- opencv-python's well-known "ImportError: libGL.so.1" failure needs
+# libgl1 regardless, and pymeshlab's bundled Qt can reach for the X11 libs too.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential cmake pkg-config ninja-build python3-dev git \
       libeigen3-dev \
@@ -99,28 +100,40 @@ open('/tmp/constraints.txt','w').write(''.join(f'{n}=={v}\n' for n,v in \
 # hy3dpaint/hunyuanpaintpbr/{pipeline,unet/modules,unet/attn_processor}.py -- none import them).
 # If build_check reveals one of these IS reachable after all, it gets added back with the file
 # and line that needed it, not restored wholesale.
+# Two of the official pins have no wheel at all for this base image's Python (3.12) and were
+# bumped to the nearest compatible release (checked the PyPI JSON API directly, 2026-10-18, not
+# assumed from the version number): onnxruntime==1.16.3 tops out at cp311 (1.17.0 is the first
+# cp312 build); pymeshlab==2022.2.post3 tops out at cp311 too (2023.12 is the first cp312 build --
+# picked .post3, a bugfix point release of that same first cp312-compatible minor version, to
+# stay as close to the original pin as the Python constraint allows). Every other exact pin here
+# was individually checked the same way and does have a cp312 (or universal py3/py2.py3) wheel.
 RUN pip install --no-cache-dir -c /tmp/constraints.txt \
       "ninja==1.11.1.1" "pybind11==2.13.4" \
       "diffusers==0.30.0" "transformers==4.46.0" "accelerate==1.1.1" "huggingface-hub==0.30.2" \
       "safetensors==0.4.4" \
       "numpy>=1.24.4,<2" "scipy==1.14.1" "einops==0.8.0" \
       "opencv-python==4.10.0.84" "imageio==2.36.0" "scikit-image==0.24.0" \
-      "rembg==2.0.65" "onnxruntime==1.16.3" \
+      "rembg==2.0.65" "onnxruntime==1.19.2" \
       "realesrgan==0.3.0" "basicsr==1.4.2" \
-      "trimesh==4.4.7" "pymeshlab==2022.2.post3" "pygltflib==1.16.3" "xatlas==0.0.9" \
+      "trimesh==4.4.7" "pymeshlab==2023.12.post3" "pygltflib==1.16.3" "xatlas==0.0.9" \
       "omegaconf==2.3.0" "pyyaml==6.0.2" "tqdm==4.66.5" \
-      "bpy==4.0" \
       "runpod>=1.10.1"
 
-# bpy (headless Blender, a real dependency, not an unused import). mesh_utils.py's TOP-LEVEL
-# `import bpy` gates the whole module -- MeshRender.py wraps importing it in a bare try/except
-# that only prints a warning on failure, so it is tempting to assume bpy is optional, but
-# MeshRender.save_mesh() unconditionally calls the module-level `save_mesh(...)` function that
-# import brings in, and that call is NOT behind any save_glb flag (confirmed by reading
-# textureGenPipeline.py's Hunyuan3DPaintPipeline.__call__ directly). This handler does NOT call
-# the Blender-based `convert_obj_to_glb` path (see handler.py's module docstring for why: it
-# follows model_worker.py's own pygltflib-based alternative instead), but the import still has to
-# succeed for Hunyuan3DPaintPipeline to work at all.
+# bpy -- NOT pip-installed as the official requirements.txt pins ("bpy==4.0"): that version does
+# not exist on PyPI at all, and every real release does (4.2.0-4.5.14: cp311 only; 5.2.2: cp313
+# only -- checked the PyPI JSON API directly, 2026-10-18) -- nothing ships a wheel for this base
+# image's Python (3.12). mesh_utils.py's TOP-LEVEL `import bpy` still gates the whole module
+# (MeshRender.py's own import of it is wrapped in a bare try/except that only prints a warning,
+# but MeshRender.save_mesh() unconditionally calls the module-level `save_mesh(...)` function
+# that import brings in, NOT behind any save_glb flag -- confirmed by reading
+# textureGenPipeline.py's Hunyuan3DPaintPipeline.__call__ directly), but nothing on this
+# worker's call path ever touches bpy's actual API: handler.py uses hy3dpaint.convert_utils's
+# pygltflib-based GLB builder instead of the Blender-based convert_obj_to_glb (see handler.py's
+# module docstring). bpy_stub.py is installed AS bpy instead -- it satisfies the import and
+# raises a clear, specific error if anything ever reaches past it into a real Blender operator.
+COPY bpy_stub.py /tmp/bpy_stub.py
+RUN python -c "import shutil, site; dest = site.getsitepackages()[0] + '/bpy.py'; \
+shutil.copy('/tmp/bpy_stub.py', dest); print('bpy stub installed at', dest)"
 RUN python -c "import bpy; print('bpy', bpy.app.version_string, 'background =', bpy.app.background)"
 
 # Official repo, pinned to the exact commit this Dockerfile and handler.py were read against.

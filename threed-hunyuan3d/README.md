@@ -31,7 +31,7 @@ shape + texture pipelines are the official project's, pinned to commit
 | DINOv2 (`facebook/dinov2-giant`) image encoder | Meta, via Hugging Face | **Apache-2.0** | No territory or MAU restriction — clean |
 | Real-ESRGAN x4plus checkpoint | `xinntao/Real-ESRGAN` | **BSD-3-Clause** | Clean |
 | rembg's default model (`u2net.onnx`) | `NathanUA/U-2-Net`, via `danielgatis/rembg` | **Apache-2.0** | Clean |
-| `bpy` (headless Blender Python module) | Blender Foundation | GPL-licensed upstream (the `bpy` PyPI distribution); imported for module-load reasons only — see "bpy is a real dependency" below, this worker's own OBJ→GLB conversion does not call into its operators | Not redistributed as a combined work beyond what Tencent's own official code already does |
+| `bpy` (headless Blender Python module) | **Not installed — `bpy_stub.py`, written for this worker** | n/a | No real Blender code or binary ships in this image at all (see "Known deviations" below for why: no PyPI wheel exists for this image's Python). The stub is pure code written for this worker, under no upstream licence. |
 
 All four Tencent-licence clauses (S1(l), S4, S5(b), S5(c)) verified by fetching
 `Tencent-Hunyuan/Hunyuan3D-2.1`'s `LICENSE` file directly on 2026-10-18, not summarised from
@@ -115,6 +115,19 @@ On failure: `{"error": "<Type>: <message>"}`, never a raised exception.
 
 ## Known deviations from the official demo/server code (read before trusting this blind)
 
+- **Two of the official `requirements.txt` pins were bumped because no wheel exists for this
+  image's Python (3.12), not by choice.** `onnxruntime==1.16.3` tops out at `cp311` (bumped to
+  `1.19.2`, the nearest version with a `cp312` wheel); `pymeshlab==2022.2.post3` likewise tops
+  out at `cp311` (bumped to `2023.12.post3`, the first `cp312`-compatible point release of the
+  first `cp312`-compatible minor version). Checked against the PyPI JSON API directly,
+  2026-10-18. `postprocessors.py`'s `FaceReducer`/`FloaterRemover`/`DegenerateFaceRemover` call
+  PyMeshLab filters by name (`meshing_decimation_quadric_edge_collapse`,
+  `compute_selection_by_small_disconnected_components_per_face`, etc.) — these have been stable
+  across PyMeshLab releases historically, but **this jump was not execution-tested against real
+  weights** (no GPU job was started; build-time verification only confirms `pymeshlab` imports,
+  not that every filter name/signature still matches what `postprocessors.py` expects at this
+  newer version). This is the other piece of this worker I would check first if face reduction
+  ever errors or silently no-ops.
 - **`remove_background` is fixed, not just passed through.** Both `demo.py` and `model_worker.py`
   write `image = image.convert("RGBA")` and only THEN check `if image.mode == "RGB":` before
   running background removal — a check that can never be true, since the line above already
@@ -144,11 +157,19 @@ On failure: `{"error": "<Type>: <message>"}`, never a raised exception.
   This is `model_worker.py`'s own choice (`save_glb=False` + its own `quick_convert_with_obj2gltf`
   helper), not an invention of this worker — see handler.py's module docstring for the full
   reasoning (OBJ's MTL format has no standard PBR metallic/roughness slot, so the bpy path's
-  fidelity there depends on Blender's own OBJ importer). `bpy` is still a real, required *import*
-  dependency regardless: `DifferentiableRenderer/mesh_utils.py`'s top-level `import bpy` gates
-  the whole module, and `MeshRender.save_mesh()` — called unconditionally inside the paint
-  pipeline, not behind `save_glb` — delegates to that module's free `save_mesh()` function. Skip
-  installing `bpy` and the paint stage breaks even though nothing calls `bpy`'s own operators.
+  fidelity there depends on Blender's own OBJ importer). Something importable as `bpy` is still
+  required regardless: `DifferentiableRenderer/mesh_utils.py`'s top-level `import bpy` gates the
+  whole module, and `MeshRender.save_mesh()` — called unconditionally inside the paint pipeline,
+  not behind `save_glb` — delegates to that module's free `save_mesh()` function.
+- **`bpy` is a stub (`bpy_stub.py`), not real Blender.** The official `requirements.txt` pins
+  `bpy==4.0`, which does not exist on PyPI; every real release from 4.2.0 to 4.5.14 ships a
+  `cp311`-only wheel and 5.2.2 ships `cp313`-only, with nothing for this image's Python (3.12) in
+  between — checked the PyPI JSON API directly, 2026-10-18. Building Blender from source for a
+  dependency this worker does not functionally need was not worth it: the stub satisfies
+  `mesh_utils.py`'s import (and its `save_mesh()`/`load_mesh()` functions, none of which touch
+  `bpy`'s own API), and raises a specific `RuntimeError` if anything ever reaches
+  `bpy.ops`/`bpy.data`/`bpy.context` — which this handler's call path never does, since it uses
+  the pygltflib conversion above instead of the one function that would.
 - **DINOv2 is fetched because the code reading confirms it is needed, not defensively.**
   `hunyuanpaintpbr/unet/modules.py`'s `UNet2p5DConditionModel.__init__` hardcodes
   `self.use_dino = True` (line 788 at the pinned commit), and `multiviewDiffusionNet.__init__`
@@ -223,8 +244,8 @@ MSYS_NO_PATHCONV=1 PYTHONIOENCODING=utf-8 "/c/Program Files/Microsoft SDKs/Azure
   --no-logs --timeout 7200 --query runId -o tsv
 ```
 
-`<tag>` = the short git sha of this repo's HEAD. Expect a long build: cloning the repo, compiling
-two native extensions, and installing `bpy` (a large wheel) all add up, even with no GPU work.
+`<tag>` = the short git sha of this repo's HEAD. Expect a long build: cloning the repo and
+compiling two native extensions add up, even with no GPU work.
 
 ## Run
 
@@ -240,4 +261,6 @@ serverless loop with no queue behind it.
 | `Dockerfile` | the image; built on ACR as `azswmcacr.azurecr.io/hunyuan3d-worker`; vendors the official repo at `/opt/hunyuan3d-src`, compiles `custom_rasterizer` + `mesh_inpaint_processor`, bakes in RealESRGAN + u2net |
 | `handler.py` | the serverless worker: boot-time weight check, offline `snapshot_download` redirect, shape + face-reduce + paint + pygltflib GLB export |
 | `safe_fetch.py` | the SSRF guard for the `image` job input when it's an `https://` URL — refuses non-public addresses and redirects |
+| `bpy_stub.py` | installed as `bpy` in site-packages — no real PyPI `bpy` wheel exists for this image's Python; see "Known deviations" |
+| `bake_u2net.py` | build-time only: downloads rembg's u2net.onnx to the path the installed rembg version resolves — a file because the lookup needs a `from` import, which ACR's dependency scanner misreads as a FROM instruction inside a `RUN python -c` block |
 | `build_check.py` | build-time checks: every pip import, the shape/paint API shape, the two compiled extensions, the SSRF guard |

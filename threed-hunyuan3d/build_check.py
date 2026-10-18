@@ -32,7 +32,8 @@ for _p in (f"{SRC}/hy3dshape", f"{SRC}/hy3dpaint"):
 
 def imports() -> None:
     import basicsr  # noqa: F401
-    import bpy  # noqa: F401
+    import bpy  # noqa: F401 - the stub (bpy_stub.py installed as bpy), not real Blender; see
+                             # the Dockerfile's "bpy_stub.py is installed AS bpy" comment
     import cv2  # noqa: F401
     import einops  # noqa: F401
     import omegaconf  # noqa: F401
