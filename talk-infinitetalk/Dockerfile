@@ -65,10 +65,11 @@ RUN sed -i '/^from inspect import ArgSpec$/d' /opt/infinitetalk/wan/multitalk.py
 # installed) call flash_attention() directly, and that function does a bare `assert FLASH_ATTN_2_AVAILABLE`. The
 # image without it failed its second Azure proof on an empty AssertionError right after the CLIP encode
 # (2026-10-18). The wheel is Dao-AILab's prebuilt one (BSD-3-Clause), matched to this base's torch 2.8 / CUDA 12 /
-# Python 3.12, with the C++ ABI read from the installed torch -- no compile on ACR.
+# Python 3.12, with the C++ ABI read from the installed torch -- no compile on ACR. 2.8.1, not 2.8.3: xformers
+# 0.0.32.post2 refuses flash-attn above 2.8.2 (the build check caught it, ACR run ch3g).
 RUN ABI=$(python -c "import torch; print('TRUE' if torch._C._GLIBCXX_USE_CXX11_ABI else 'FALSE')") \
     && pip install --no-cache-dir --no-deps \
-      "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.8cxx11abi${ABI}-cp312-cp312-linux_x86_64.whl"
+      "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.1/flash_attn-2.8.1+cu12torch2.8cxx11abi${ABI}-cp312-cp312-linux_x86_64.whl"
 #
 # xformers==0.0.32.post2 is the release whose own requirements.txt pins `torch >= 2.8` (checked at tag
 # v0.0.32.post2) and ships a cp39-abi3 manylinux wheel (no compile, works on any Python >= 3.9).
