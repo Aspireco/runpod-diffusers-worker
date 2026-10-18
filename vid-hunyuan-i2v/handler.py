@@ -1,25 +1,30 @@
-"""HunyuanVideo-I2V - a second top-tier image-to-video opinion, at Model Caching size.
+"""HunyuanVideo-I2V - a second top-tier image-to-video opinion, for the Azure GPU fleet lane
+`hunyuan-i2v` (A100 80GB PCIe).
 
-Why this lane exists: the brief assumed HunyuanVideo needed a 371.8GB selective download.
-It does not. That figure belongs to `tencent/HunyuanVideo-1.5`, a different model. The
-original I2V weights are 30.2GB native, and this diffusers port is 43.6GB - inside the band
-Runpod's Model Caching serves. So this lane needs **no network volume**, which also means it
-is **not pinned to EUR-IS-1**, where the A14B lane is stuck behind thin GPU stock.
+Uses the diffusers port `hunyuanvideo-community/HunyuanVideo-I2V` (43.6GB) directly through
+`diffusers.HunyuanVideoImageToVideoPipeline` -- there is no vendored model code here, unlike
+vid-wan-animate or workers/threed-hunyuan3d: this is exactly the official diffusers recipe for
+the model, called through its public pipeline API.
 
-That makes it the hedge: if EUR-IS-1 has no A100 free, this still runs anywhere.
+This was originally a RunPod worker that resolved its weights through RunPod's own Model Caching
+(a MODEL_ID env var plus a glob-search of a HuggingFace-shaped cache under
+/runpod-volume/huggingface-cache/hub/, see git history). That mechanism is RunPod-specific and
+does not exist on Azure. Weights now come from a plain flat directory, HUNYUAN_I2V_DIR, staged by
+the fetch job from gpu/manifests/hunyuan-i2v.tsv -- the same convention vid-wan-animate and
+vid-ltx25 use -- loaded with `local_files_only=True` and no network call of any kind
+(HF_HUB_OFFLINE=1 is also set in the Dockerfile as a second line of defence).
 
 LICENCE - READ BEFORE PRODUCTION USE. The repo loaded here is a community re-upload that
-declares `base_model: tencent/HunyuanVideo-I2V` and carries **no licence tag of its own**.
-A missing tag on a re-upload changes nothing: the weights are Tencent's and the **Tencent
-Hunyuan Community License** governs. Its Territory is worldwide **excluding the European
-Union, the United Kingdom and South Korea** - the United States IS inside the grant, which
-is why this is usable where MiniMax H3 is not. But §4(c) binds *Outputs*, not just weights:
-generated video may not be displayed outside the Territory. EU/UK visitors to a public
-site are the residual exposure. See stack-docs/VIDEO-BENCHMARK.md §6.
+declares `base_model: tencent/HunyuanVideo-I2V` and carries **no licence tag of its own**. A
+missing tag on a re-upload changes nothing: the weights are Tencent's and the **Tencent Hunyuan
+Community License** governs. Its Territory is worldwide **excluding the European Union, the
+United Kingdom and South Korea** -- the United States IS inside the grant. ğ4(c) binds *Outputs*,
+not just weights: generated video may not be displayed outside the Territory. See README.md's
+licence table (this is why the image lives only in azswmcacr/East US 2 and runs only in the new
+Canada Central environment).
 """
 
 import base64
-import glob
 import io
 import os
 import subprocess
@@ -31,56 +36,70 @@ import urllib.request
 # "printed then stopped" (died during import). Those need opposite fixes.
 print("[boot] hunyuan i2v handler starting", flush=True)
 
-import torch
+import torch  # noqa: E402
 
 print(f"[boot] torch {torch.__version__} cuda={torch.cuda.is_available()}", flush=True)
 
-MODEL_ID = os.environ.get("MODEL_ID", "hunyuanvideo-community/HunyuanVideo-I2V")
-CACHE_ROOT = os.environ.get("HF_CACHE_ROOT", "/runpod-volume/huggingface-cache/hub")
+HUNYUAN_I2V_DIR = os.environ.get("HUNYUAN_I2V_DIR", "/runpod-volume/hunyuan-i2v")
 FPS = int(os.environ.get("OUTPUT_FPS", "24"))
 OFFLOAD = os.environ.get("OFFLOAD", "model")
 
-
-def find_snapshot(model_id: str) -> str:
-    """Locate the snapshot Runpod's Model Caching mounted for this repo."""
-    repo_dir = "models--" + model_id.replace("/", "--")
-    snaps = [p for p in glob.glob(os.path.join(CACHE_ROOT, repo_dir, "snapshots", "*"))
-             if os.path.isdir(p)]
-    if not snaps:
-        raise RuntimeError(
-            f"No cached snapshot for {model_id} under {CACHE_ROOT}. Point the endpoint's "
-            "--model-reference at this repo and redeploy."
-        )
-    return max(snaps, key=os.path.getmtime)
-
+# One representative file per component the handler actually loads, not all 28 manifest entries
+# (gpu/manifests/hunyuan-i2v.tsv lists the exact set; this is a fast boot check, not a full
+# integrity scan -- same pattern as vid-wan-animate's _REQUIRED list).
+_REQUIRED = [
+    "model_index.json",
+    "transformer/config.json",
+    "transformer/diffusion_pytorch_model.safetensors.index.json",
+    "text_encoder/model.safetensors.index.json",
+    "text_encoder_2/model.safetensors",
+    "vae/diffusion_pytorch_model.safetensors",
+    os.path.join("tokenizer", "tokenizer_config.json"),
+    os.path.join("tokenizer_2", "vocab.json"),
+]
 
 _t0 = time.time()
-_snapshot = find_snapshot(MODEL_ID)
-print(f"[boot] {MODEL_ID} -> {_snapshot}", flush=True)
+for _rel in _REQUIRED:
+    _full = os.path.join(HUNYUAN_I2V_DIR, _rel)
+    if not os.path.isfile(_full):
+        raise RuntimeError(
+            f"{_full} is missing: run the fetch job for lane hunyuan-i2v "
+            f"(gpu/manifests/hunyuan-i2v.tsv) before starting this worker."
+        )
+print(f"[boot] weights present at {HUNYUAN_I2V_DIR}", flush=True)
 
 from diffusers import HunyuanVideoImageToVideoPipeline  # noqa: E402
 from diffusers.models import HunyuanVideoTransformer3DModel  # noqa: E402
 
-# The transformer is loaded separately in bf16 while the rest of the pipeline stays fp16.
-# This is diffusers' documented configuration for HunyuanVideo and it is not cosmetic: the
-# 13B transformer overflows in fp16 on long clips and returns black frames, while the VAE
-# and text encoders are fine at fp16 and cost less memory there.
+# The transformer is loaded separately in bf16 while the rest of the pipeline stays fp16. This is
+# diffusers' documented configuration for HunyuanVideo and it is not cosmetic: the 13B transformer
+# overflows in fp16 on long clips and returns black frames, while the VAE and text encoders are
+# fine at fp16 and cost less memory there.
 transformer = HunyuanVideoTransformer3DModel.from_pretrained(
-    _snapshot, subfolder="transformer", torch_dtype=torch.bfloat16,
+    HUNYUAN_I2V_DIR, subfolder="transformer", torch_dtype=torch.bfloat16, local_files_only=True,
 )
 PIPE = HunyuanVideoImageToVideoPipeline.from_pretrained(
-    _snapshot, transformer=transformer, torch_dtype=torch.float16, local_files_only=True,
+    HUNYUAN_I2V_DIR, transformer=transformer, torch_dtype=torch.float16, local_files_only=True,
 )
 
 # The VAE decode is the memory spike, not the denoise: it reconstructs every frame at full
-# resolution at once. Tiling trades a little speed for the difference between running and
-# OOMing on a 48GB card at 720p.
+# resolution at once. Tiling trades a little speed for the difference between running and OOMing
+# at 720p. On this lane's A100 80GB (vs. the original worker's target A6000 48GB) there is more
+# headroom either way, but tiling is free in time cost here and was already the proven setting, so
+# it stays on rather than being relaxed without a GPU job to prove relaxing it is safe (task scope
+# excludes starting one).
 try:
     PIPE.vae.enable_tiling()
     print("[boot] vae tiling enabled", flush=True)
 except Exception as e:
     print(f"[boot] vae tiling unavailable: {e}", flush=True)
 
+# Model-level CPU offload swaps whole modules (text encoders / transformer / VAE) between CPU and
+# GPU at stage boundaries. The 13B transformer in bf16 is ~26GB, plus the VAE and two text
+# encoders in fp16 (~5GB total) and activations for a 121-151 frame/720p clip -- comfortably under
+# 80GB even fully resident, so OFFLOAD=model is a safety margin rather than a necessity here, kept
+# as the default because it is the setting this lane was already reasoned through on (A6000 48GB,
+# where it mattered more) and relaxing it has no measured upside without a GPU job to time it.
 if OFFLOAD == "sequential":
     PIPE.enable_sequential_cpu_offload()
 elif OFFLOAD == "model":
@@ -153,7 +172,8 @@ def handler(job):
         return {"error": "prompt is required"}
     image = _load_image(job_input)
     if image is None:
-        return {"error": "this lane is image-to-video: supply image_url or image_base64"}
+        return {"error": "this lane is image-to-video: supply image, image_base64 (data URL or "
+                         "raw base64) or image_url"}
 
     started = time.time()
     try:
@@ -161,8 +181,11 @@ def handler(job):
         height = int(job_input.get("height", 720)) // 16 * 16
         image = _fit(image, width, height)
 
-        # 4n+1 frames: the causal temporal VAE encodes in groups of four plus a keyframe.
-        frames = int(job_input.get("num_frames", 121))
+        # 4n+1 frames: the causal temporal VAE encodes in groups of four plus a keyframe. Default
+        # 129 (~5.4s at the model's native 24fps) per the task brief's own figure -- the original
+        # RunPod worker (see git history) defaulted to 121; 129 is also a valid 4n+1 value
+        # (4*32+1) and is the one actually asked for here.
+        frames = int(job_input.get("num_frames", 129))
         frames = max(5, (frames - 1) // 4 * 4 + 1)
 
         kwargs = {
@@ -172,20 +195,20 @@ def handler(job):
             "height": height,
             "num_frames": frames,
             "num_inference_steps": int(job_input.get("num_inference_steps", 30)),
-            # HunyuanVideo is distribution-guided rather than CFG-guided; its reference
-            # setting is 6.0 and it does not behave like a Wan/SDXL guidance scale.
+            # HunyuanVideo is distribution-guided rather than CFG-guided; its reference setting is
+            # 6.0 and it does not behave like a Wan/SDXL guidance scale.
             "guidance_scale": float(job_input.get("guidance_scale", 6.0)),
         }
         seed = int(job_input.get("seed", -1))
-        if seed >= 0:
-            kwargs["generator"] = torch.Generator(device="cpu").manual_seed(seed)
+        if seed < 0:
+            seed = int.from_bytes(os.urandom(4), "big")
+        kwargs["generator"] = torch.Generator(device="cpu").manual_seed(seed)
 
         result = PIPE(**kwargs)
         out_frames = result.frames
-        # Same guard as vid-wan-a14b: current diffusers returns `.frames` as a numpy array
-        # (batch, frames, H, W, C), and `if not <ndarray>` raises after the generation has
-        # already been paid for. This lane still returned lists on 2026-09-14, but it shares
-        # the same unbounded diffusers pin, so it is one dependency bump from the same failure.
+        # Current diffusers returns `.frames` as a numpy array (batch, frames, H, W, C), and
+        # `if not <ndarray>` raises after the generation has already been paid for -- same guard
+        # as vid-wan-a14b.
         import numpy as np
         from PIL import Image
         if isinstance(out_frames, np.ndarray):
@@ -203,18 +226,18 @@ def handler(job):
         mp4 = _frames_to_mp4(out_frames, fps)
         return {
             "video_url": "data:video/mp4;base64," + base64.b64encode(mp4).decode(),
-            "model": MODEL_ID,
+            "width": width,
+            "height": height,
+            "fps": fps,
+            "frames": len(out_frames),
+            "seconds": round(len(out_frames) / fps, 2),
+            "seed": seed,
+            "generation_seconds": round(time.time() - started, 2),
+            "model": "hunyuanvideo-community/HunyuanVideo-I2V",
             "licence": "Tencent Hunyuan Community (Territory excludes EU/UK/South Korea; "
                        "binds Outputs, not just weights)",
             "dtype": "bf16-transformer/fp16-rest",
-            "frames": len(out_frames),
-            "fps": fps,
-            "width": width,
-            "height": height,
-            "seconds": round(len(out_frames) / fps, 2),
             "steps": kwargs["num_inference_steps"],
-            "seed": seed,
-            "generation_seconds": round(time.time() - started, 2),
         }
     except torch.cuda.OutOfMemoryError as e:
         torch.cuda.empty_cache()
