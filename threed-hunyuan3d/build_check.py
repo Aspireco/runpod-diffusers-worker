@@ -25,12 +25,22 @@ import sys
 import torch
 
 SRC = "/opt/hunyuan3d-src"
-for _p in (f"{SRC}/hy3dshape", f"{SRC}/hy3dpaint"):
+for _p in (SRC, f"{SRC}/hy3dshape", f"{SRC}/hy3dpaint"):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
 
 def imports() -> None:
+    # torchvision_fix (official repo, root level) must run BEFORE `import basicsr`: newer
+    # torchvision removed `torchvision.transforms.functional_tensor`, which basicsr's own
+    # data/degradations.py still imports unconditionally -- confirmed live, ACR run ch46,
+    # 2026-10-18: "ModuleNotFoundError: No module named 'torchvision.transforms.functional_tensor'".
+    # handler.py already calls apply_fix() before any hy3dpaint import for exactly this reason;
+    # this check tests imports in isolation from handler.py's own boot sequence, so it needs the
+    # same fix applied here too, not inherited from it.
+    from torchvision_fix import apply_fix
+    apply_fix()
+
     import basicsr  # noqa: F401
     import bpy  # noqa: F401 - the stub (bpy_stub.py installed as bpy), not real Blender; see
                              # the Dockerfile's "bpy_stub.py is installed AS bpy" comment
