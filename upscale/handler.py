@@ -66,8 +66,10 @@ if MODE == "upscale":
     from spandrel import ImageModelDescriptor, ModelLoader  # noqa: E402
 
     # Both scales load at import. Loading the one the job asks for would be lazier and
-    # wrong: FlashBoot snapshots the idle process, so anything loaded inside the handler
-    # is paid for again on every cold start. 134MB resident for the pair is cheap.
+    # wrong: a replica keeps calling the handler until its job queue is empty before it
+    # exits (gpu/azure_runner.py's run loop), so anything loaded inside the handler function
+    # body would be paid for again on every job, not every cold start. 134MB resident for
+    # the pair is cheap.
     # fp32 throughout -- RRDBNet is a known source of fp16 overflow artefacts and black
     # output on some cards, and the tiles are small enough that fp32 is not the bottleneck.
     _loader = ModelLoader(device=torch.device(DEVICE))
