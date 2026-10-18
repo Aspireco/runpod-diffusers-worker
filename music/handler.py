@@ -64,6 +64,17 @@ import torch  # noqa: E402
 
 from acestep.handler import AceStepHandler  # noqa: E402
 from acestep.inference import GenerationConfig, GenerationParams, generate_music  # noqa: E402
+import acestep.model_downloader as _downloader  # noqa: E402
+
+# On boot ACE-Step syncs its model code into the checkpoint folder with shutil.copy2. On the Azure Files share that
+# copystat (chmod, utime) is refused with EPERM after the bytes are written, which failed the first Azure proof
+# (2026-10-18). The bytes are all the sync needs, so its module gets a content-only copy.
+import shutil as _shutil  # noqa: E402
+import types as _types  # noqa: E402
+
+_downloader.shutil = _types.SimpleNamespace(
+    **{**{n: getattr(_shutil, n) for n in dir(_shutil) if not n.startswith("__")},
+       "copy2": lambda src, dst, *a, **k: _shutil.copyfile(src, dst)})
 
 # Load at import, not inside the handler, so this runs once per replica rather than once per job
 # (same convention as every other worker in this repo -- azure_runner.py's load() runs this whole
