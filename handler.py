@@ -28,7 +28,7 @@ CACHE_ROOT = os.environ.get("HF_CACHE_ROOT", "/runpod-volume/huggingface-cache/h
 DEFAULTS = {
     "Tongyi-MAI/Z-Image-Turbo": {"steps": 8, "guidance": 0.0, "size": (1024, 1024)},
     "black-forest-labs/FLUX.2-klein-4B": {"steps": 4, "guidance": 0.0, "size": (1024, 1024)},
-    "Qwen/Qwen-Image-2512": {"steps": 28, "guidance": 4.0, "size": (1328, 1328), "offload": True},
+    "Qwen/Qwen-Image-2512": {"steps": 40, "guidance": 4.0, "size": (1328, 1328), "offload": True},
 }
 CFG = DEFAULTS.get(MODEL_ID, {"steps": 20, "guidance": 3.5, "size": (1024, 1024)})
 
@@ -183,6 +183,13 @@ def handler(job):
     negative = (job_input.get("negative_prompt") or "").strip()
     if negative:
         kwargs["negative_prompt"] = negative
+    if "qwen-image" in MODEL_ID.lower():
+        # QwenImagePipeline is not guidance-distilled: guidance_scale does nothing, and its real CFG (true_cfg_scale)
+        # runs only when a negative prompt is passed. The official example passes a single space. Without it the
+        # first Azure proof (2026-10-18) spelled its sign "TRIDAY SPECIAL" and drew the wrong oven.
+        kwargs.pop("guidance_scale", None)
+        kwargs["true_cfg_scale"] = guidance
+        kwargs["negative_prompt"] = negative or " "
     if seed >= 0:
         kwargs["generator"] = torch.Generator(device="cuda").manual_seed(seed)
 
