@@ -156,7 +156,9 @@ from transformers import Wav2Vec2FeatureExtractor  # noqa: E402
 from src.audio_analysis.wav2vec2 import Wav2Vec2Model  # noqa: E402
 
 WAV2VEC_FE = Wav2Vec2FeatureExtractor.from_pretrained(WAV2VEC_DIR, local_files_only=True)
-WAV2VEC_MODEL = Wav2Vec2Model.from_pretrained(WAV2VEC_DIR, local_files_only=True).to("cpu")
+# eager attention: transformers 4.5x loads wav2vec2 with sdpa, which refuses the output_attentions the official
+# forward passes ("not supported when using the attn_implementation set to sdpa", Azure proof 2026-10-18)
+WAV2VEC_MODEL = Wav2Vec2Model.from_pretrained(WAV2VEC_DIR, local_files_only=True, attn_implementation="eager").to("cpu")
 WAV2VEC_MODEL.feature_extractor._freeze_parameters()
 print(f"[boot] wav2vec2 audio encoder ready in {time.time() - _t0:.1f}s (cpu)", flush=True)
 
