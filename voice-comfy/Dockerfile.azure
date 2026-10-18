@@ -1,0 +1,12 @@
+# The voice-comfy worker for the Azure lane `vibevoice`: the proven ghcr image plus the VibeVoice-ComfyUI requirements
+# that did not install through comfy-node-install (no diffusers: the node's embedded scheduler failed the first Azure
+# proof, 2026-10-18). Thin on purpose: the base keeps its ComfyUI, nodes and weights exactly as they were.
+FROM ghcr.io/aspireco/runpod-voice-comfy-worker:latest
+
+# Pin the base's own torch so nothing below can swap it for a CUDA 13 wheel (the house rule in ./Dockerfile).
+RUN python -c "import torch, torchvision, torchaudio; open('/tmp/constraints.txt','w').write(''.join(f'{n}=={v}\n' for n,v in [('torch',torch.__version__),('torchvision',torchvision.__version__),('torchaudio',torchaudio.__version__)]))"
+RUN pip install --no-cache-dir -c /tmp/constraints.txt --only-binary=:all: \
+      "diffusers>=0.33,<0.36" "peft>=0.17.0" "ml-collections" "absl-py"
+
+COPY build_check_vibevoice.py /build_check_vibevoice.py
+RUN python /build_check_vibevoice.py

@@ -141,6 +141,14 @@ open('/tmp/constraints.txt','w').write(''.join(f'{n}=={v}\n' for n,v in \
 assert 'cu13' not in v, f'torch was replaced: {v}'" \
     && python -c "import kokoro_onnx, onnxruntime; print('kokoro_onnx + onnxruntime import OK')"
 
+# VibeVoice-ComfyUI's own requirements did not all install through comfy-node-install: the image had no diffusers, so
+# the node's embedded scheduler failed the first Azure proof (2026-10-18). Install what its vvembed imports, and import
+# that code here so a missing one fails the build (Dockerfile.azure is the same fix as a thin layer on the ghcr image).
+RUN pip install --no-cache-dir -c /tmp/constraints.txt --only-binary=:all: \
+      "diffusers>=0.33,<0.36" "peft>=0.17.0" "ml-collections" "absl-py"
+COPY build_check_vibevoice.py /build_check_vibevoice.py
+RUN python /build_check_vibevoice.py
+
 # Kokoro. Two artefacts: an ONNX graph from a GitHub release, and a voice pack.
 #
 # WHY NOT THE NODE'S OWN DOWNLOADER. The first build used it and failed on a HuggingFace
