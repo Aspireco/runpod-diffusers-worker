@@ -198,9 +198,10 @@ def handler(job):
 
     remove_background = bool(job_input.get("remove_background", True))
     texture = bool(job_input.get("texture", True))
-    target_faces = int(job_input.get("target_faces", 40000))
-    steps = int(job_input.get("steps", 50))
-    octree_resolution = int(job_input.get("octree_resolution", 384))
+    # bounded: inputs can come from an agent, and an extreme ask would only run to the deadline
+    target_faces = min(max(int(job_input.get("target_faces", 40000)), 1000), 200000)
+    steps = min(max(int(job_input.get("steps", 50)), 1), 100)
+    octree_resolution = min(max(int(job_input.get("octree_resolution", 384)), 128), 512)
     guidance_scale = float(job_input.get("guidance_scale", 5.0))
     seed = job_input.get("seed", 1234)
     seed = int(seed) if seed is not None else int.from_bytes(os.urandom(4), "big")

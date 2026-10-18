@@ -181,8 +181,9 @@ def handler(job):
 
     started = time.time()
     try:
-        width = int(job_input.get("width", 1280)) // 16 * 16
-        height = int(job_input.get("height", 720)) // 16 * 16
+        # bounded: inputs can come from an agent, and a 4K or 20 s ask would only run to the deadline
+        width = min(max(int(job_input.get("width", 1280)), 256), 1280) // 16 * 16
+        height = min(max(int(job_input.get("height", 720)), 256), 1280) // 16 * 16
         image = _fit(image, width, height)
 
         # 4n+1 frames: the causal temporal VAE encodes in groups of four plus a keyframe. Default
@@ -190,7 +191,7 @@ def handler(job):
         # RunPod worker (see git history) defaulted to 121; 129 is also a valid 4n+1 value
         # (4*32+1) and is the one actually asked for here.
         frames = int(job_input.get("num_frames", 129))
-        frames = max(5, (frames - 1) // 4 * 4 + 1)
+        frames = max(5, (min(frames, 129) - 1) // 4 * 4 + 1)
 
         kwargs = {
             "image": image,
@@ -198,7 +199,7 @@ def handler(job):
             "width": width,
             "height": height,
             "num_frames": frames,
-            "num_inference_steps": int(job_input.get("num_inference_steps", 30)),
+            "num_inference_steps": min(max(int(job_input.get("num_inference_steps", 30)), 1), 50),
             # HunyuanVideo is distribution-guided rather than CFG-guided; its reference setting is
             # 6.0 and it does not behave like a Wan/SDXL guidance scale.
             "guidance_scale": float(job_input.get("guidance_scale", 6.0)),
