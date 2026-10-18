@@ -58,10 +58,17 @@ RUN sed -i '/^from inspect import ArgSpec$/d' /opt/infinitetalk/wan/multitalk.py
     && ! grep -n "ArgSpec" /opt/infinitetalk/wan/multitalk.py
 
 # xformers is a hard, unconditional import for the audio cross-attention path (wan/modules/attention.py
-# imports xformers.ops with no try/except, used by SingleStreamAttention.forward). flash-attn is NOT
-# installed and is NOT required: the main attention() function in that same file falls back to torch's
-# own scaled_dot_product_attention when flash_attn / flash_attn_interface are absent (checked in the
-# official source, not assumed) -- so nothing here compiles flash-attn from source on ACR.
+# imports xformers.ops with no try/except, used by SingleStreamAttention.forward).
+#
+# flash-attn IS required. attention() in wan/modules/attention.py does fall back to torch's SDPA, but Wan's CLIP
+# encoder (wan/modules/clip.py) and the DiT itself (wan/modules/multitalk_model.py, unless sageattention is
+# installed) call flash_attention() directly, and that function does a bare `assert FLASH_ATTN_2_AVAILABLE`. The
+# image without it failed its second Azure proof on an empty AssertionError right after the CLIP encode
+# (2026-10-18). The wheel is Dao-AILab's prebuilt one (BSD-3-Clause), matched to this base's torch 2.8 / CUDA 12 /
+# Python 3.12, with the C++ ABI read from the installed torch -- no compile on ACR.
+RUN ABI=$(python -c "import torch; print('TRUE' if torch._C._GLIBCXX_USE_CXX11_ABI else 'FALSE')") \
+    && pip install --no-cache-dir --no-deps \
+      "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.8cxx11abi${ABI}-cp312-cp312-linux_x86_64.whl"
 #
 # xformers==0.0.32.post2 is the release whose own requirements.txt pins `torch >= 2.8` (checked at tag
 # v0.0.32.post2) and ships a cp39-abi3 manylinux wheel (no compile, works on any Python >= 3.9).

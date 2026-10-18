@@ -28,8 +28,14 @@ from src.audio_analysis.wav2vec2 import Wav2Vec2Model  # noqa: E402,F401
 from transformers import Wav2Vec2FeatureExtractor  # noqa: E402,F401
 
 # The hard, unconditional dependency: wan/modules/attention.py imports xformers.ops with no try/except,
-# for the audio cross-attention path (SingleStreamAttention.forward). flash_attn is NOT required -- the
-# main attention() function falls back to torch's scaled_dot_product_attention when it is absent.
+# for the audio cross-attention path (SingleStreamAttention.forward). flash_attn is required too: the CLIP
+# encoder and the DiT call flash_attention() directly, which asserts FLASH_ATTN_2_AVAILABLE (the second Azure
+# proof died on that bare assert, 2026-10-18), so the build fails here if Wan cannot see it.
+import flash_attn  # noqa: E402
+from wan.modules import attention as _wan_attention  # noqa: E402
+
+assert _wan_attention.FLASH_ATTN_2_AVAILABLE, "wan/modules/attention.py cannot import flash_attn"
+print(f"flash-attn {flash_attn.__version__}: Wan's flash_attention path is available")
 import xformers  # noqa: E402
 import xformers.ops  # noqa: E402,F401
 import decord  # noqa: E402,F401
