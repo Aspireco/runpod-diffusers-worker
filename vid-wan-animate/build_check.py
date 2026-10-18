@@ -4,6 +4,7 @@
     python /build_check.py wan         wan.WanAnimate and the animate-14B config resolve
     python /build_check.py detector    the AGPL YOLOv10 detector is gone and the replacement is wired
     python /build_check.py sam2        sam2's CUDA extension built (process_checkpoint/sam2, replace mode)
+    python /build_check.py sam2cfg     Wan's SAM2 predictor build finds sam2_hiera_l.yaml and constructs, on CPU
 
 A file rather than RUN python -c "..." continuation lines: ACR's dependency scanner reads any line that
 starts with `from` as a FROM instruction and fails the build before it begins (vid-wan-a14b build_check.py,
@@ -143,6 +144,34 @@ def sam2_() -> None:
           "(needed: Wan2.2's build_sam2_video_predictor sets fill_hole_area=8 by default)")
 
 
+def sam2cfg() -> None:
+    """Wan2.2's own SAM2 predictor build (preprocess/sam_utils.py build_sam2_video_predictor, the call
+    ProcessPipeline makes at boot), on CPU: hydra must find sam2_hiera_l.yaml through the search path
+    `import sam2` registers (pkg://sam2_configs), and every _target_ in it must construct. sam2 at the
+    pinned commit keeps those yaml files as data that neither its setup.py (no package_data) nor a
+    MANIFEST.in ships, so the non-editable install left sam2_configs/ holding only __init__.py and the
+    first Azure replace proof died at boot with MissingConfigException (2026-10-18, job
+    2026-10-18.8207657749-ed285b93, after a 19-minute cold start). Construction never touches CUDA
+    (only init_state and forward do). Optional argv[2]: a sam2_hiera_large.pt to load as well, which
+    the pre-flight smoke run downloads from Wan's own repo; the image build has none."""
+    import os
+    _patch_cuda_current_device_for_cpu_build()
+    import wan
+    sys.path.insert(0, os.path.join(os.path.dirname(wan.__file__), "modules", "animate", "preprocess"))
+    import sam2  # noqa: F401  (registers hydra's search path)
+    import sam2_configs
+    cfg_dir = os.path.dirname(sam2_configs.__file__)
+    yamls = sorted(f for f in os.listdir(cfg_dir) if f.endswith(".yaml"))
+    assert "sam2_hiera_l.yaml" in yamls, f"no sam2_hiera_l.yaml in {cfg_dir}: {sorted(os.listdir(cfg_dir))}"
+    from sam_utils import build_sam2_video_predictor  # Wan's flat module, as process_pipepline.py imports it
+    ckpt = sys.argv[2] if len(sys.argv) > 2 else None
+    predictor = build_sam2_video_predictor("sam2_hiera_l.yaml", ckpt, device="cpu")
+    params = sum(p.numel() for p in predictor.parameters()) / 1e6
+    print(f"sam2 configs OK in {cfg_dir} {yamls}; Wan's build_sam2_video_predictor built "
+          f"{type(predictor).__module__}.{type(predictor).__name__} on CPU ({params:.0f}M parameters), "
+          f"checkpoint {'loaded with no missing keys: ' + ckpt if ckpt else 'not loaded (none in the image)'}")
+
+
 if __name__ == "__main__":
     assert "cu13" not in torch.__version__, f"torch replaced: {torch.__version__}"
-    {"imports": imports, "wan": wan_, "detector": detector, "sam2": sam2_}[sys.argv[1]]()
+    {"imports": imports, "wan": wan_, "detector": detector, "sam2": sam2_, "sam2cfg": sam2cfg}[sys.argv[1]]()

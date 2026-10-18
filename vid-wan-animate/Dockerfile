@@ -95,6 +95,14 @@ RUN pip install --no-cache-dir -c /tmp/constraints.txt \
 RUN pip install --no-cache-dir --no-build-isolation -c /tmp/constraints.txt \
     "git+https://github.com/facebookresearch/sam2.git@0e78a118995e66bb27d78518c4bd9a3e95b4e266"
 
+# sam2 at that commit keeps its hydra configs (sam2_configs/*.yaml) as data files that neither its
+# setup.py (no package_data) nor a MANIFEST.in ships, so the install above leaves site-packages/
+# sam2_configs holding only __init__.py, and Wan's build_sam2_video_predictor() then fails at boot
+# with "MissingConfigException: Cannot find primary config 'sam2_hiera_l.yaml'" (the first Azure
+# replace proof, 2026-10-18, after a 19-minute cold start). Copy the four configs in from the same
+# commit; build_check.py sam2cfg below runs Wan's own predictor build on CPU against them.
+RUN python -c "import os, urllib.parse, urllib.request, sam2_configs; d = os.path.dirname(sam2_configs.__file__); base = 'https://raw.githubusercontent.com/facebookresearch/sam2/0e78a118995e66bb27d78518c4bd9a3e95b4e266/sam2_configs/'; [urllib.request.urlretrieve(base + urllib.parse.quote(n), os.path.join(d, n)) for n in ('sam2_hiera_t.yaml', 'sam2_hiera_s.yaml', 'sam2_hiera_b+.yaml', 'sam2_hiera_l.yaml')]; print(d, sorted(os.listdir(d)))"
+
 # The ONE licence fix this worker exists to make: Wan-Animate's official preprocessing detector
 # (process_checkpoint/det/yolov10m.onnx, Ultralytics YOLOv10) is AGPL-3.0 and is never downloaded --
 # see README.md's licence table. detector_adapter.py replaces it with torchvision's own Faster R-CNN
@@ -113,6 +121,7 @@ RUN python /build_check.py imports
 RUN python /build_check.py wan
 RUN python /build_check.py detector
 RUN python /build_check.py sam2
+RUN python /build_check.py sam2cfg
 
 COPY handler.py /handler.py
 RUN python -c "import ast; ast.parse(open('/handler.py').read()); print('handler parses OK')"
