@@ -90,6 +90,14 @@ print("[boot] AGPL yolov10m.onnx detector replaced with torchvision Faster R-CNN
 from process_pipepline import ProcessPipeline  # noqa: E402
 from wan.configs import WAN_CONFIGS  # noqa: E402
 
+import mask_gaps  # noqa: E402
+
+# A frame where SAM2 loses the person (smoke, a muzzle flash, a rifle across the body) has an empty mask, and
+# Wan's get_mask_boxes() then dies on np.nonzero(mask).min(); borrow the nearest frame's mask instead (mask_gaps.py).
+_official_get_mask = ProcessPipeline.get_mask
+ProcessPipeline.get_mask = lambda self, frames, th_step, kp2ds_all: mask_gaps.fill_empty_masks(
+    _official_get_mask(self, frames, th_step, kp2ds_all), log=lambda m: print(m, flush=True))
+
 CFG = WAN_CONFIGS["animate-14B"]
 
 print("[boot] loading WanAnimate (noise model + T5 + CLIP + VAE + relighting LoRA)...", flush=True)
@@ -326,6 +334,8 @@ def handler(job):
         torch.cuda.empty_cache()
         return {"error": f"CUDA OOM: {e}. Shorten the driving clip (max_seconds) or lower resolution."}
     except Exception as e:  # surface the reason rather than dying silently
+        import traceback
+        print(traceback.format_exc(), flush=True)   # the error alone hid where it came from (2026-10-19)
         return {"error": f"{type(e).__name__}: {e}"}
     finally:
         shutil.rmtree(work, ignore_errors=True)

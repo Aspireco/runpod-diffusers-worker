@@ -1,0 +1,10 @@
+# The wan-animate worker with frames whose person mask SAM2 lost filled from the nearest frame (mask_gaps.py,
+# 2026-10-19) and full tracebacks on errors. Thin on purpose, like Dockerfile.azure: everything else is exactly
+# the image the lane already runs.
+FROM azswmcacr.azurecr.io/wan-animate-worker:b670741-sam2cfg
+
+COPY mask_gaps.py /mask_gaps.py
+COPY handler.py /handler.py
+RUN python -c "import ast, sys; ast.parse(open('/handler.py').read()); sys.path.insert(0, '/'); import numpy as np, mask_gaps; z = np.zeros((2, 2), np.uint8); a = z.copy(); a[0, 0] = 1; assert mask_gaps.fill_empty_masks([z, a])[0] is a; print('handler parses, mask_gaps works')"
+
+CMD ["python", "-u", "/handler.py"]
