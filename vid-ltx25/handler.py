@@ -73,6 +73,11 @@ for p in (PIPE, UPSAMPLE):
     except Exception:
         pass
 AUDIO_RATE = PIPE.vocoder.config.output_sampling_rate
+# All six guidance terms off, as the distilled checkpoint wants. Each audio_* falls back to its video twin when
+# falsy (`audio_stg_scale or stg_scale`), so both are set explicitly.
+UNGUIDED = {"guidance_scale": 1.0, "audio_guidance_scale": 1.0, "stg_scale": 0.0, "audio_stg_scale": 0.0,
+            "modality_scale": 1.0, "audio_modality_scale": 1.0, "guidance_rescale": 0.0,
+            "audio_guidance_rescale": 0.0}
 print(f"[boot] ready in {time.time() - _t0:.1f}s | offload={OFFLOAD} skipped={SKIP} audio={AUDIO_RATE} Hz", flush=True)
 
 
@@ -86,7 +91,14 @@ def _load_image(job_input):
     else:
         raw = src.split(",", 1)[1] if src.startswith("data:") else src
         data = base64.b64decode(raw, validate=True)
-    return Image.open(io.BytesIO(data)).convert("RGB")
+    image = Image.open(io.BytesIO(data))
+    if image.mode in ("RGBA", "LA", "PA") or "transparency" in image.info:
+        # A cut-out's transparent pixels would become black and be animated as a black void: flatten onto white.
+        rgba = image.convert("RGBA")
+        flat = Image.new("RGB", rgba.size, (255, 255, 255))
+        flat.paste(rgba, mask=rgba.getchannel("A"))
+        return flat
+    return image.convert("RGB")
 
 
 def _fit(image, width, height):
@@ -120,8 +132,12 @@ def handler(job):
     image = _load_image(job_input)
     started = time.time()
     try:
-        common = {"prompt": prompt, "num_frames": frames, "frame_rate": rate, "guidance_scale": 1.0,
-                  "audio_guidance_scale": 1.0, "generator": generator, "return_dict": False}
+        # The distilled DiT runs unguided: EVERY guidance term off (model card, "Quick start - distilled"). The
+        # pipeline's defaults are the full model's (stg 1.0, modality 3.0, rescale 0.7), so leaving any unset ran
+        # two extra guided passes per step that this checkpoint was never trained for: over-cooked, ghosting video,
+        # clipped or silent audio, and three times the GPU time (until 2026-10-19).
+        common = {"prompt": prompt, "num_frames": frames, "frame_rate": rate, "generator": generator,
+                  "return_dict": False, **UNGUIDED}
         conditions = None
         if image is not None:
             conditions = [LTX2VideoCondition(frames=_fit(image, width // 2, height // 2), index=0, strength=1.0)]
@@ -144,6 +160,7 @@ def handler(job):
         return {
             "video_url": "data:video/mp4;base64," + base64.b64encode(data).decode(),
             "model": "Lightricks/LTX-2.5-Diffusers (distilled, two-stage)",
+            "recipe": "unguided-2026-10-19",
             "mode": "image-to-video" if image is not None else "text-to-video",
             "frames": n, "fps": rate, "seconds": round(n / rate, 2), "width": width, "height": height,
             "audio": True, "seed": seed, "generation_seconds": round(time.time() - started, 2),

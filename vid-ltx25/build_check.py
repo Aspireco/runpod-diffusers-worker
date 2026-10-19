@@ -16,5 +16,13 @@ from diffusers.utils import encode_video  # noqa: F401
 from transformers.models.gemma4_unified import configuration_gemma4_unified  # noqa: F401
 
 assert "cu13" not in torch.__version__, f"torch replaced: {torch.__version__}"
+
+# handler.UNGUIDED passes these by name: a renamed argument must fail the build, not land in **kwargs on a GPU.
+import inspect  # noqa: E402
+
+_params = inspect.signature(LTX2ConditionPipeline.__call__).parameters
+_missing = [n for n in ("guidance_scale", "audio_guidance_scale", "stg_scale", "audio_stg_scale", "modality_scale",
+                        "audio_modality_scale", "guidance_rescale", "audio_guidance_rescale") if n not in _params]
+assert not _missing, f"LTX2ConditionPipeline lacks {_missing}"
 print("torch", torch.__version__, "| diffusers", diffusers.__version__, "| transformers", transformers.__version__,
       "| av", av.__version__, "| LTX-2.5 classes OK")
