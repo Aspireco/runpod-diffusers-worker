@@ -4,6 +4,7 @@
     python /build_check.py shape        hy3dshape's pipeline + postprocessor API shape resolves
     python /build_check.py paint        hy3dpaint's config + pipeline API shape resolves
     python /build_check.py extensions   custom_rasterizer (CUDA) and mesh_inpaint_processor (C++) import
+    python /build_check.py modules      every module the configs load by name at runtime imports
     python /build_check.py safe_fetch   the SSRF guard refuses non-https, non-public addresses, redirects, oversize/
                                          bodies, and still accepts data: URLs and base64
 
@@ -118,7 +119,33 @@ def safe_fetch_check() -> None:
     safe_fetch.selftest()
 
 
+def modules() -> None:
+    """Import every module the DiT/VAE/paint configs can load by name at runtime. The shape step only imports
+    pipelines.py; the model classes come later from config.yaml targets (instantiate_from_config), so a missing
+    package there passed the build and killed the first Azure proof at boot (timm, 2026-10-19)."""
+    import importlib
+    import pkgutil
+    import traceback
+
+    import hy3dshape.models as models
+    import hunyuanpaintpbr
+
+    names = [m.name for m in pkgutil.walk_packages(models.__path__, "hy3dshape.models.")]
+    names += [m.name for m in pkgutil.walk_packages(hunyuanpaintpbr.__path__, "hunyuanpaintpbr.")]
+    names += ["textureGenPipeline", "convert_utils", "utils.multiview_utils", "utils.pipeline_utils",
+              "utils.image_super_utils", "utils.simplify_mesh_utils", "utils.uvwrap_utils"]
+    failed = []
+    for name in names:
+        try:
+            importlib.import_module(name)
+        except Exception as e:  # noqa: BLE001 - collect every failure, then fail once with the whole list
+            failed.append(f"{name}: {type(e).__name__}: {e}")
+            traceback.print_exc(limit=1)
+    assert not failed, "modules that would fail at runtime:\n  " + "\n  ".join(failed)
+    print(f"modules OK: {len(names)} imported (hy3dshape.models, hunyuanpaintpbr, the paint pipeline's utils)")
+
+
 if __name__ == "__main__":
     assert "cu13" not in torch.__version__, f"torch replaced: {torch.__version__}"
     {"imports": imports, "shape": shape, "paint": paint, "extensions": extensions,
-     "safe_fetch": safe_fetch_check}[sys.argv[1]]()
+     "safe_fetch": safe_fetch_check, "modules": modules}[sys.argv[1]]()

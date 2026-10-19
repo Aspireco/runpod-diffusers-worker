@@ -98,6 +98,12 @@ open('/tmp/constraints.txt','w').write(''.join(f'{n}=={v}\n' for n,v in \
 # hy3dpaint/{textureGenPipeline,convert_utils}.py, hy3dpaint/utils/*.py,
 # hy3dpaint/DifferentiableRenderer/{MeshRender,mesh_utils,camera_utils}.py,
 # hy3dpaint/hunyuanpaintpbr/{pipeline,unet/modules,unet/attn_processor}.py -- none import them).
+# Wrong for three of them: timm (hy3dshape/models/denoisers/moe_layers.py), torchdiffeq
+# (models/diffusion/transport/integrators.py) and pytorch-lightning (models/diffusion/flow_matching_sit.py)
+# are top-level imports of modules the DiT config loads by name at runtime, so importing pipelines.py never
+# reached them: the first Azure proof died at boot on 'No module named timm' (2026-10-19, about CA$1).
+# They are back at the official pins, and `build_check.py modules` imports every module under
+# hy3dshape/models and hy3dpaint/hunyuanpaintpbr so a missing package fails the build instead.
 # If build_check reveals one of these IS reachable after all, it gets added back with the file
 # and line that needed it, not restored wholesale.
 # Two of the official pins have no wheel at all for this base image's Python (3.12) and were
@@ -117,6 +123,7 @@ RUN pip install --no-cache-dir -c /tmp/constraints.txt \
       "realesrgan==0.3.0" "basicsr==1.4.2" \
       "trimesh==4.4.7" "pymeshlab==2023.12.post3" "pygltflib==1.16.3" "xatlas==0.0.9" \
       "omegaconf==2.3.0" "pyyaml==6.0.2" "tqdm==4.66.5" \
+      "pytorch-lightning==1.9.5" "timm" "torchdiffeq" \
       "runpod>=1.10.1"
 
 # bpy -- NOT pip-installed as the official requirements.txt pins ("bpy==4.0"): that version does
@@ -202,6 +209,7 @@ RUN python /build_check.py shape
 RUN python /build_check.py paint
 RUN python /build_check.py extensions
 RUN python /build_check.py safe_fetch
+RUN python /build_check.py modules
 
 COPY handler.py /handler.py
 RUN python -c "import ast; ast.parse(open('/handler.py').read()); print('handler parses OK')"
