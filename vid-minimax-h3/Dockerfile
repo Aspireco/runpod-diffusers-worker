@@ -68,7 +68,12 @@ COPY safe_fetch.py /safe_fetch.py
 # dependency scanner reads any line starting with `from` as a FROM instruction (vid-wan-a14b, 2026-10-17).
 COPY build_check.py /build_check.py
 RUN python /build_check.py imports
-RUN python /build_check.py offline
+# HF_HUB_OFFLINE=1 above is a runtime guarantee (the lane's weights are local, never fetched at boot);
+# the `offline` check itself needs to download the real repo's small config files once, at build time, to
+# build its decoy directory (see build_check.py's own docstring) -- so it is the one RUN line that
+# overrides the two offline env vars back on for just this instruction. Caught live on ACR run cx1
+# (2026-10-18): hf_hub_download raised OfflineModeIsEnabled because the ENV above already applied.
+RUN HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0 python /build_check.py offline
 RUN python /build_check.py safe_fetch
 
 COPY handler.py /handler.py
