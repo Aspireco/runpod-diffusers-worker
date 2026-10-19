@@ -79,19 +79,14 @@ for _rel in _REQUIRED:
         )
 print(f"[boot] weights present at {MINIMAX_H3_DIR}", flush=True)
 
-from diffusers import ComponentsManager, ModularPipeline  # noqa: E402
+import h3_pipeline  # noqa: E402  the one place the pipeline is built (build_check.py runs the same build())
 
 # A ComponentsManager + auto offload, not a plain .to("cuda"): the fl2va transformer partition alone is
 # 61.7GB in bf16 and the Qwen3-VL conditioner is another 62.1GB -- together with the two VAEs that does not
 # sit resident on one 80GB card at once. The manager keeps the weights in host RAM (220GiB on this replica)
 # and moves onto the GPU only what the current step needs, which is diffusers' own documented recipe for a
 # single 80GB card (see the module docstring above and README.md's Memory section).
-MANAGER = ComponentsManager()
-PIPE = ModularPipeline.from_pretrained(
-    MINIMAX_H3_DIR, workflow="fl2va", components_manager=MANAGER, local_files_only=True,
-)
-PIPE.load_components(workflow="fl2va", dtype=torch.bfloat16)
-MANAGER.enable_auto_cpu_offload(device="cuda", memory_reserve_margin=MEMORY_RESERVE_MARGIN)
+PIPE, MANAGER = h3_pipeline.build(MINIMAX_H3_DIR, reserve=MEMORY_RESERVE_MARGIN)
 print(f"[boot] ready in {time.time() - _t0:.1f}s | memory_reserve_margin={MEMORY_RESERVE_MARGIN}", flush=True)
 
 

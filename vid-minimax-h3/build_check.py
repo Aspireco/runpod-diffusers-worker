@@ -95,9 +95,23 @@ def offline() -> None:
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             open(dest, "wb").close()
 
-        from diffusers import ModularPipeline
+        # The handler's own build(), with only the per-component weight load stubbed (the placeholders are empty):
+        # from_pretrained + load_components run exactly as at boot, which is where the first Azure proof died
+        # (load_components(workflow=...) on blocks from_pretrained had already pruned, 2026-10-19).
+        from diffusers.modular_pipelines.modular_pipeline_utils import ComponentSpec
 
-        pipe = ModularPipeline.from_pretrained(decoy_dir, workflow="fl2va", local_files_only=True)
+        import h3_pipeline
+
+        loaded = []
+        real_load = ComponentSpec.load
+        ComponentSpec.load = lambda spec, **kw: loaded.append(spec.name)
+        try:
+            pipe, _ = h3_pipeline.build(decoy_dir, offload=False, verify=False)
+        finally:
+            ComponentSpec.load = real_load
+        assert loaded, "load_components loaded nothing: the workflow pruning or the diffusers version changed"
+        assert "transformer" in loaded and "transformer_ref" not in loaded, f"load_components loaded {loaded}"
+        print(f"build OK: h3_pipeline.build() ran from_pretrained + load_components; would load {sorted(loaded)}")
 
         checked = 0
         for name, spec in pipe._component_specs.items():

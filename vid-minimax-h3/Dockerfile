@@ -66,6 +66,7 @@ COPY safe_fetch.py /safe_fetch.py
 
 # Fail the BUILD, not a billed GPU: a file, not RUN python -c "..." continuation lines -- ACR's
 # dependency scanner reads any line starting with `from` as a FROM instruction (vid-wan-a14b, 2026-10-17).
+COPY h3_pipeline.py /h3_pipeline.py
 COPY build_check.py /build_check.py
 RUN python /build_check.py imports
 # HF_HUB_OFFLINE=1 above is a runtime guarantee (the lane's weights are local, never fetched at boot);
