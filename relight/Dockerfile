@@ -1,6 +1,17 @@
-# IC-Light relighting / scene compositing. ~7.5GB of weights, fetched on first boot:
-# the SD1.5 base (~4GB) plus two 1.72GB IC-Light offset files. Give the endpoint at least
-# 30GB of container disk, or point Runpod Model Caching at the two repos.
+# IC-Light relighting / scene compositing for the Azure GPU fleet lane `relight` (T4, 16GB).
+# ~5.6GB of weights, fetched on first boot and cached on the Azure Files share at $HF_HOME:
+# the SD1.5 base's unet+vae+text_encoder+tokenizer subfolders (~2.13GB -- every from_pretrained
+# call below is subfolder-scoped, so the repo's own ~608MB safety_checker and its duplicate
+# non-safetensors .bin files are never fetched) plus the two IC-Light offset files (fbc + fc,
+# ~1.72GB each, both fetched unless ENABLE_FC=0 drops fc). Sizes checked against each repo's
+# own HF API 2026-10-17 -- smaller than this file used to claim (~4GB base), because the
+# targeted subfolder loads skip everything the full pipeline/repo would otherwise pull.
+#
+# Not baked: at ~5.6GB this is far past this fleet's small-weights bake guidance, and the
+# `tts` lane already proves the plain-HF_HOME-on-share pattern on this same fleet for a
+# comparable (if somewhat smaller, ~4.5GB across its own two modes) first-boot download at
+# T4 prices, with no manifest or fetch job needed. Give the endpoint at least 30GB of
+# container disk if deploying on RunPod directly; on Azure the Files share takes the weight.
 FROM runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404
 
 # The torch280 base ships HF_HUB_ENABLE_HF_TRANSFER=1 without the hf_transfer package,
@@ -11,7 +22,7 @@ FROM runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404
 ENV HF_HUB_ENABLE_HF_TRANSFER=0
 
 ENV PYTHONUNBUFFERED=1 \
-    HF_HOME=/opt/hf \
+    HF_HOME=/runpod-volume/hf \
     HF_HUB_DISABLE_TELEMETRY=1 \
     BASE_MODEL=stablediffusionapi/realistic-vision-v51 \
     IC_LIGHT_REPO=lllyasviel/ic-light \
@@ -55,5 +66,15 @@ COPY handler.py /handler.py
 # Fail the BUILD rather than the worker: a syntax error surfaces here, where the error is
 # visible, instead of as a silent crash-loop with no container logs.
 RUN python -c "import ast; ast.parse(open('/handler.py').read()); print('handler parses OK')"
+
+# Fail the BUILD, not a billed GPU: proves the one bespoke, highest-risk piece of this
+# handler -- widening a stock UNet2DConditionModel's conv_in from 4 to 8/12 channels and
+# zero-padding the new channels -- still works against this image's pinned diffusers
+# version, using a throwaway, randomly-initialised UNet built from a bare config (no
+# from_pretrained, no network, no CUDA). A file, not an inline RUN: this repo's ACR
+# dependency-scanner issue with Dockerfile RUN continuation lines applies here too, and this
+# check needs more than one line of real Python.
+COPY build_check.py /build_check.py
+RUN python /build_check.py
 
 CMD ["python", "-u", "/handler.py"]

@@ -1,0 +1,8 @@
+# The 3D worker for the Azure GPU fleet (lane `threed`): the RunPod image as built from ./Dockerfile, with this
+# folder's handler.py, which returns each mesh as a data: URL when the lane sets DATA_URLS=1 (the Azure runner moves
+# big data: URLs to Blob, so RunPod's 8 MB return cap does not apply there).
+#   az acr build -r azswmcacr -f workers/threed/Dockerfile.azure -t threed-worker:<tag> -t threed-worker:latest workers/threed
+ARG BASE=ghcr.io/aspireco/runpod-threed-worker:latest
+FROM ${BASE}
+COPY handler.py /handler.py
+RUN python -c "import ast; ast.parse(open('/handler.py').read()); print('handler parses OK')"

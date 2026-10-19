@@ -1,0 +1,11 @@
+# The wan-animate worker for the Azure lane `wan-animate`: the image whose first proof loaded the whole 14B model
+# (2026-10-18, 385 s) plus sam2's four hydra configs, which its non-editable install had dropped, so the proof died one
+# step later with MissingConfigException. Thin on purpose: everything else stays exactly the image that booted. The
+# same step is in ./Dockerfile for a full rebuild.
+FROM azswmcacr.azurecr.io/wan-animate-worker:2703175-animate
+
+RUN python -c "import os, urllib.parse, urllib.request, sam2_configs; d = os.path.dirname(sam2_configs.__file__); base = 'https://raw.githubusercontent.com/facebookresearch/sam2/0e78a118995e66bb27d78518c4bd9a3e95b4e266/sam2_configs/'; [urllib.request.urlretrieve(base + urllib.parse.quote(n), os.path.join(d, n)) for n in ('sam2_hiera_t.yaml', 'sam2_hiera_s.yaml', 'sam2_hiera_b+.yaml', 'sam2_hiera_l.yaml')]; print(d, sorted(os.listdir(d)))"
+
+# Fail the BUILD, not a billed A100: Wan's own SAM2 predictor build, on CPU, against the configs just added.
+COPY build_check.py /build_check.py
+RUN python /build_check.py sam2cfg

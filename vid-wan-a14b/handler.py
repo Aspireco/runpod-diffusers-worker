@@ -37,7 +37,14 @@ import torch
 print(f"[boot] torch {torch.__version__} cuda={torch.cuda.is_available()}", flush=True)
 
 MODEL_DIR_ENV = os.environ.get("MODEL_DIR", "")
-MODEL_ID = os.environ.get("MODEL_ID", "Wan-AI/Wan2.2-I2V-A14B-Diffusers")
+# i2v (the default, unchanged) or t2v: the same worker serves Wan2.2-T2V-A14B with WanPipeline when WAN_TASK=t2v
+# and MODEL_DIR points at the T2V weights (Azure lane wan-t2v-a14b, 2026-10-17).
+TASK = os.environ.get("WAN_TASK", "i2v")
+if TASK not in ("i2v", "t2v"):
+    print(f"[boot] unknown WAN_TASK={TASK!r}, falling back to i2v", flush=True)
+    TASK = "i2v"
+MODEL_ID = os.environ.get("MODEL_ID", "Wan-AI/Wan2.2-T2V-A14B-Diffusers" if TASK == "t2v"
+                          else "Wan-AI/Wan2.2-I2V-A14B-Diffusers")
 FPS = int(os.environ.get("OUTPUT_FPS", "16"))          # Wan 2.2 is a 16fps model
 OFFLOAD = os.environ.get("OFFLOAD", "model")           # model | sequential | none
 DTYPE = os.environ.get("DTYPE", "bf16")                # bf16 | fp16 | fp8
@@ -45,11 +52,10 @@ DTYPE = os.environ.get("DTYPE", "bf16")                # bf16 | fp16 | fp8
 # The volume mounts at /runpod-volume on a serverless worker but /workspace on a pod, and
 # the loader script writes from a pod. Both spellings are checked so the same image works
 # either way, with the Model Caching layout kept as a last resort.
-CANDIDATES = [
-    MODEL_DIR_ENV,
+CANDIDATES = [MODEL_DIR_ENV] + ([] if TASK == "t2v" else [   # never fall back to the i2v weights for t2v
     "/runpod-volume/wan22-i2v-a14b",
     "/workspace/wan22-i2v-a14b",
-]
+])
 
 
 def resolve_model_dir() -> str:
@@ -81,7 +87,7 @@ for sub in ("transformer", "transformer_2", "text_encoder", "vae"):
     if not os.path.isdir(os.path.join(MODEL_DIR, sub)):
         raise RuntimeError(f"{MODEL_DIR} is missing '{sub}' - the weight download is incomplete")
 
-from diffusers import AutoencoderKLWan, WanImageToVideoPipeline  # noqa: E402
+from diffusers import AutoencoderKLWan, WanImageToVideoPipeline, WanPipeline  # noqa: E402
 
 # A typo in the DTYPE env var must not become a KeyError at module import -- that is a
 # crash-loop with no useful log, which is the exact failure class this stack keeps paying
@@ -99,9 +105,10 @@ _TORCH_DTYPE = _DTYPES[DTYPE]
 vae = AutoencoderKLWan.from_pretrained(MODEL_DIR, subfolder="vae",
                                        torch_dtype=torch.float32, local_files_only=True)
 
-PIPE = WanImageToVideoPipeline.from_pretrained(
+PIPE = (WanPipeline if TASK == "t2v" else WanImageToVideoPipeline).from_pretrained(
     MODEL_DIR, vae=vae, torch_dtype=_TORCH_DTYPE, local_files_only=True,
 )
+print(f"[boot] task {TASK}: {type(PIPE).__name__}", flush=True)
 
 # What actually ran, as opposed to what was asked for. If torchao is missing the pipeline
 # silently stays bf16, and reporting the *requested* dtype would label a bf16 run "fp8" in
@@ -132,11 +139,13 @@ if DTYPE == "fp8":
 # fails, the lane stays on the plain 40-step model rather than refusing to boot.
 LIGHTNING = os.environ.get("LIGHTNING", "1") == "1"
 LORA_REPO = os.environ.get("LORA_REPO", "lightx2v/Wan2.2-Distill-Loras")
-LORA_DIR = os.environ.get("LORA_DIR", "/runpod-volume/loras/wan22-i2v-lightx2v")
+LORA_DIR = os.environ.get("LORA_DIR", f"/runpod-volume/loras/wan22-{TASK}-lightx2v")
+# The same repo ships a 4-step pair per task: i2v _1022, t2v _1217 (checked on the hub 2026-10-17)
+_LORA_TAG = "1217" if TASK == "t2v" else "1022"
 LORA_HIGH = os.environ.get("LORA_HIGH",
-                           "wan2.2_i2v_A14b_high_noise_lora_rank64_lightx2v_4step_1022.safetensors")
+                           f"wan2.2_{TASK}_A14b_high_noise_lora_rank64_lightx2v_4step_{_LORA_TAG}.safetensors")
 LORA_LOW = os.environ.get("LORA_LOW",
-                          "wan2.2_i2v_A14b_low_noise_lora_rank64_lightx2v_4step_1022.safetensors")
+                          f"wan2.2_{TASK}_A14b_low_noise_lora_rank64_lightx2v_4step_{_LORA_TAG}.safetensors")
 LIGHTNING_ACTIVE = False
 if LIGHTNING:
     try:
@@ -255,10 +264,13 @@ def handler(job):
     if not prompt:
         return {"error": "prompt is required"}
 
-    image = _load_image(job_input)
-    if image is None:
+    # text-to-video takes no image; image-to-video must have one
+    image = _load_image(job_input) if TASK == "i2v" else None
+    if TASK == "i2v" and image is None:
         return {"error": "this lane is image-to-video: supply image_url or image_base64. "
                          "For text-to-video use the T2V-A14B lane."}
+    if TASK == "t2v" and (job_input.get("last_image_url") or job_input.get("last_image_base64")):
+        return {"error": "this lane is text-to-video: first-last-frame needs the image-to-video lane"}
 
     started = time.time()
     try:
@@ -267,7 +279,8 @@ def handler(job):
         # longer matches the aspect ratio that was asked for.
         width = int(job_input.get("width", 1280)) // 16 * 16
         height = int(job_input.get("height", 720)) // 16 * 16
-        image = _fit(image, width, height)
+        if image is not None:
+            image = _fit(image, width, height)
 
         # 4n+1 frames: the temporal VAE encodes in groups of four plus a keyframe, so 81
         # frames is 5.06s at 16fps and 80 would be silently truncated.
@@ -275,7 +288,6 @@ def handler(job):
         frames = max(5, (frames - 1) // 4 * 4 + 1)
 
         kwargs = {
-            "image": image,
             "prompt": prompt,
             "negative_prompt": job_input.get(
                 "negative_prompt",
@@ -288,6 +300,8 @@ def handler(job):
             "num_inference_steps": int(job_input.get("num_inference_steps", DEFAULT_STEPS)),
             "guidance_scale": float(job_input.get("guidance_scale", DEFAULT_CFG)),
         }
+        if image is not None:
+            kwargs["image"] = image
 
         # First-last-frame: an optional end image the clip must arrive at. This is what keeps
         # contact actions honest (a pallet set down, a plank seated) and lets scene N's end

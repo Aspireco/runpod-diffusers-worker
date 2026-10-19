@@ -41,6 +41,11 @@ JOB_TIMEOUT = int(os.environ.get("COMFY_JOB_TIMEOUT", "1800"))
 # entirely rather than truncating it, so this must fail loudly below their limit.
 MAX_RETURN_BYTES = int(os.environ.get("MAX_RETURN_BYTES", str(8 * 1024 * 1024)))
 WORKFLOW_DIR = os.environ.get("WORKFLOW_DIR", "/workflows")
+# The Azure GPU fleet's runner moves any big `data:` URL in the output to Blob storage, so on Azure (DATA_URLS=1) each
+# file's "data" is a data URL with its MIME type, and the lane sets a MAX_RETURN_BYTES far above RunPod's.
+DATA_URLS = os.environ.get("DATA_URLS") == "1"
+MIMES = {".glb": "model/gltf-binary", ".gltf": "model/gltf+json", ".obj": "model/obj", ".ply": "application/x-ply",
+         ".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp"}
 
 # Loaded at module import so FlashBoot snapshots a process that already has them --
 # these are small JSON files, but the import-time rule is the house pattern and the
@@ -191,12 +196,16 @@ def collect(outputs):
                     files.append({"node": node_id, "kind": key, "filename": e["filename"],
                                   "error": f"fetch failed: {exc}"})
                     continue
+                b64 = base64.b64encode(blob).decode()
+                if DATA_URLS:
+                    mime = MIMES.get(os.path.splitext(e["filename"])[1].lower(), "application/octet-stream")
+                    b64 = f"data:{mime};base64,{b64}"
                 files.append({
                     "node": node_id,
                     "kind": key,
                     "filename": e["filename"],
                     "bytes": len(blob),
-                    "data": base64.b64encode(blob).decode(),
+                    "data": b64,
                 })
     return files
 
@@ -287,6 +296,10 @@ def run(workflow, image_b64, params):
             # A 700k-face mesh with a 4096 atlas is tens of MB before base64 adds its
             # third. Say so, with the numbers and the knobs, instead of letting the
             # response evaporate somewhere between here and the client.
+            if DATA_URLS:
+                # Azure keeps every mesh (no return cap) and puts the finished one first: the decimated, baked
+                # PBR mesh is the smallest; the raw TRELLIS mesh after it is the fallback.
+                meshes.sort(key=lambda m: m.get("bytes") or 0)
             total = sum(len(m.get("data") or "") for m in meshes)
             if total > MAX_RETURN_BYTES and len(meshes) > 1:
                 # The graph terminates in TWO SaveGLB nodes -- the raw TRELLIS mesh and the

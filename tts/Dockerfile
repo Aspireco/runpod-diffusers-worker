@@ -1,6 +1,10 @@
-# Chatterbox Multilingual TTS. Weights (~3.5GB) are fetched on first boot rather than
-# baked: they're small enough that the pull is quick, and Chatterbox contacts the hub even
-# with a warm cache, so forcing offline mode here would crash-loop it.
+# Chatterbox Multilingual TTS, plus (handler.py mode: "vc") Chatterbox's voice-conversion model,
+# ChatterboxVC -- same chatterbox-tts package, same ResembleAI/chatterbox repo, no extra pip
+# install: ChatterboxVC ships inside the one `chatterbox-tts` wheel this Dockerfile already pins
+# below, and it loads lazily (handler.py), fetching its own ~1GB s3gen.safetensors + conds.pt on
+# the first mode=vc job. Weights (~3.5GB for TTS, ~1GB more for VC) are fetched on first boot
+# rather than baked: they're small enough that the pull is quick, and Chatterbox contacts the hub
+# even with a warm cache, so forcing offline mode here would crash-loop it.
 # BASE PINNED TO torch 2.6.0 ON PURPOSE -- do not "upgrade" this line.
 # chatterbox-tts hard-pins torch==2.6.0 at EVERY published version (0.1.0-0.1.3 and 0.1.7
 # pin torch==2.6.0; 0.1.4-0.1.6 instead pin numpy<1.26.0). The torch280 base ships
@@ -58,11 +62,12 @@ RUN pip install --no-cache-dir -c /tmp/constraints.txt --only-binary=numpy \
     && pip install --no-cache-dir -c /tmp/constraints.txt \
       "runpod>=1.10.1"
 
-# Fail the BUILD, not a billing GPU, if torch was swapped or the import that broke at
-# runtime last time still breaks.
-RUN python -c "import torch; v=torch.__version__; print('torch', v); assert 'cu13' not in v, f'torch replaced: {v}'"
-RUN python -c "import transformers; print('transformers', transformers.__version__); \
-from transformers import LlamaModel; print('LlamaModel import OK')"
+# Fail the BUILD, not a billing GPU, if torch was swapped or the import that broke at runtime
+# last time still breaks. A file, not an inline `RUN python -c "..."`: ACR's dependency scanner
+# misreads a RUN line that begins (after its `\` continuation) with `from`, as `build_check.py`'s
+# own docstring explains (hit building this exact Dockerfile on ACR, 2026-10-17).
+COPY build_check.py /build_check.py
+RUN python /build_check.py
 
 COPY handler.py /handler.py
 RUN python -c "import ast; ast.parse(open('/handler.py').read()); print('handler parses OK')"

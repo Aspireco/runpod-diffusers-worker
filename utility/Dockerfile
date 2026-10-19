@@ -1,4 +1,12 @@
-# BiRefNet cutouts. ~450MB of weights, fetched on first boot.
+# BiRefNet cutouts for the Azure GPU fleet lane `cutout` (T4, 16GB). MODEL_ID picks the
+# variant: ZhengPeng7/BiRefNet (~444MB), ZhengPeng7/BiRefNet_HR (~445MB) or egeorcun/lucida
+# (~885MB) -- sizes are each repo's own model.safetensors, checked against the HF API
+# 2026-10-17. Weights are NOT baked: only one variant is ever resident in a given deployed
+# lane (MODEL_ID is fixed per lane at deploy time), so baking all three would add ~1.8GB of
+# dead weight to every cold-start image pull regardless of which lane is running. HF_HOME
+# below points at the Azure Files share instead -- each lane downloads its own variant once
+# and every later cold start of that lane reads it back from the share, the same trade
+# already proven on the `tts` lane.
 FROM runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404
 
 # The torch280 base ships HF_HUB_ENABLE_HF_TRANSFER=1 without the hf_transfer package,
@@ -9,7 +17,7 @@ FROM runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404
 ENV HF_HUB_ENABLE_HF_TRANSFER=0
 
 ENV PYTHONUNBUFFERED=1 \
-    HF_HOME=/opt/hf \
+    HF_HOME=/runpod-volume/hf \
     MODEL_ID=ZhengPeng7/BiRefNet \
     INPUT_RES=1024 \
     HF_HUB_DISABLE_TELEMETRY=1
@@ -24,7 +32,8 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 # default PyPI -- which since 2.11 means CUDA 13 wheels requiring driver >= 580. Runpod
 # hosts run 570/575, so CUDA init dies before Python writes a single line and the worker
 # crash-loops with completely empty container logs. Pinning the already-installed versions
-# as constraints makes that upgrade impossible.
+# as constraints makes that upgrade impossible. The same driver family runs the Azure
+# Container Apps GPU fleet this image also ships to, so the pin stays load-bearing there too.
 RUN python -c "import torch, torchvision, torchaudio; \
 open('/tmp/constraints.txt','w').write(''.join(f'{n}=={v}\n' for n,v in \
 [('torch',torch.__version__),('torchvision',torchvision.__version__),('torchaudio',torchaudio.__version__)]))" \
@@ -45,5 +54,14 @@ assert 'cu13' not in v and not v.startswith('2.1'), f'torch was replaced: {v}'"
 
 COPY handler.py /handler.py
 RUN python -c "import ast; ast.parse(open('/handler.py').read()); print('handler parses OK')"
+
+# Fail the BUILD, not a billed GPU: constructs all three MODEL_ID variants' remote-code
+# architecture (random weights, no safetensors download) against the pinned transformers/
+# timm/einops/kornia stack above. A file, not an inline RUN -- see build_check.py's own
+# docstring for why. HF_HOME is overridden to a throwaway /tmp dir for just this one step
+# (deleted immediately after) so the tiny config/code files it does fetch never land in the
+# real $HF_HOME path and never get committed to this layer.
+COPY build_check.py /build_check.py
+RUN HF_HOME=/tmp/hf-buildcheck python /build_check.py && rm -rf /tmp/hf-buildcheck
 
 CMD ["python", "-u", "/handler.py"]

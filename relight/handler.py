@@ -62,8 +62,10 @@ BASE_SIDE = int(os.environ.get("BASE_SIDE", "640"))
 DEVICE = torch.device("cuda")
 
 # ---------------------------------------------------------------------------
-# Load at MODULE IMPORT, never inside the handler: FlashBoot snapshots the idle
-# process, so anything built here is free on every subsequent cold start.
+# Load at MODULE IMPORT, never inside the handler: a replica keeps calling the handler
+# until its job queue is empty before it exits (gpu/azure_runner.py's run loop), so
+# anything built here loads exactly once per replica no matter how many jobs it drains,
+# instead of once per job.
 # ---------------------------------------------------------------------------
 
 _t0 = time.time()
@@ -85,9 +87,16 @@ TEXT_ENCODER = CLIPTextModel.from_pretrained(BASE_MODEL, subfolder="text_encoder
 VAE = AutoencoderKL.from_pretrained(BASE_MODEL, subfolder="vae")
 
 TEXT_ENCODER = TEXT_ENCODER.to(device=DEVICE, dtype=torch.float16)
-# bfloat16 for the VAE is upstream's choice and it matters: fp16 VAE encode of a flat
-# 127-grey field drifts enough to show up as a colour cast across the whole composite.
-VAE = VAE.to(device=DEVICE, dtype=torch.bfloat16)
+# Upstream's own choice is bfloat16 here, and the reason is real: fp16 VAE encode of a flat
+# 127-grey field drifts enough to show up as a colour cast across the whole composite. But
+# this fleet's GPU for this lane is a T4 (compute capability 7.5, Turing), which has no bf16
+# tensor cores -- bf16 arithmetic still runs, just without hardware acceleration -- so this
+# port uses float32 for the VAE instead: same full-range precision bf16 was chosen for
+# (more, in fact), at the cost of a bit more VRAM/compute for the VAE's one encode and one-
+# or-two decode calls per job, a small share of total runtime next to the UNet's 20-25 fp16
+# sampling steps. The UNets and text encoder stay fp16 -- that is what the T4's fp16 tensor
+# cores are for.
+VAE = VAE.to(device=DEVICE, dtype=torch.float32)
 VAE.set_attn_processor(AttnProcessor2_0())
 
 

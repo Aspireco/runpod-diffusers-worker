@@ -1,6 +1,7 @@
-# Real-ESRGAN upscaling + RIFE frame interpolation. Both sets of weights are baked in:
-# ~160MB total, small enough that baking beats a first-boot download and removes the
-# runtime network dependency (and the Model Caching setup) entirely.
+# Real-ESRGAN upscaling + RIFE frame interpolation for the Azure GPU fleet lanes `upscale`
+# and `interpolate` (T4, 16GB). Both sets of weights are baked in: ~160MB total, small
+# enough that baking beats a first-boot download and removes the runtime network dependency
+# entirely (on RunPod this also removes the need for its separate Model Caching setup).
 #
 # One image serves both jobs -- deploy it twice, MODE=upscale and MODE=interpolate.
 FROM runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404
@@ -53,8 +54,9 @@ RUN pip install --no-cache-dir \
       "runpod>=1.10.1"
 
 # Real-ESRGAN weights from xinntao's own releases (BSD-3-Clause). Both scales are baked so
-# the handler can switch on `scale` at import time -- FlashBoot snapshots the idle process,
-# so anything loaded inside the handler is re-paid on every cold start.
+# the handler can switch on `scale` at import time -- a replica keeps calling the handler
+# until its job queue is empty before it exits (gpu/azure_runner.py's run loop), so anything
+# loaded inside the handler function body would be re-paid on every job, not every cold start.
 RUN mkdir -p /opt/weights \
  && curl -fsSL -o /opt/weights/RealESRGAN_x4plus.pth \
       https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth \
@@ -82,23 +84,32 @@ COPY handler.py /handler.py
 # visible, instead of as a silent crash-loop with no container logs.
 RUN python -c "import ast; ast.parse(open('/handler.py').read()); print('handler parses OK')"
 
-# Worth more than the syntax check. The v4.26 checkpoint is DDP-saved, so every key carries
-# a "module." prefix, and upstream loads it with strict=False -- get the prefix wrong and
-# load_state_dict matches nothing, raises nothing, and the endpoint serves untrained mush.
-# Asserting an empty missing_keys here turns that into a build failure.
-RUN python -c "import sys, torch; sys.path.insert(0, '/opt/rife'); \
-from train_log.IFNet_HDv3 import IFNet; \
-sd = torch.load('/opt/rife/train_log/flownet.pkl', map_location='cpu', weights_only=True); \
-sd = {k.replace('module.', '', 1): v for k, v in sd.items() if k.startswith('module.')}; \
-r = IFNet().load_state_dict(sd, strict=False); \
-assert not r.missing_keys, r.missing_keys[:5]; \
-print('RIFE v4.26 loads OK,', len(sd), 'tensors')"
+# Fail the BUILD, not a billed GPU: runs handler.py's own module-level construction for
+# real, once per MODE, through the same runpod.serverless.start patch gpu/azure_runner.py
+# uses to import a worker safely -- not a hand-copied snippet of the scale/missing_keys
+# assertions below, which would silently stop proving anything the day handler.py changes.
+#
+# A file, not an inline RUN: this used to be two separate checks here, each its own
+# `python -c "..."`. The RIFE one broke ACR's build -- its continuation line (after the `\`
+# that followed the sys.path.insert call) did the IFNet import from train_log.IFNet_HDv3 as
+# its very first words, and ACR's dependency scanner misreads a RUN continuation line
+# starting with that word as an attempted FROM instruction, failing the build before Docker
+# itself ever runs it (the identical failure tts/build_check.py's own docstring records for
+# a different lane -- deliberately not reproduced verbatim here, to keep this exact comment
+# from being the thing that trips the same scanner). build_check.py proves the same two
+# things -- "RIFE v4.26 loads OK, <n> tensors" with an empty missing_keys, and both
+# Real-ESRGAN checkpoints report the scale the handler indexes them by -- by running the
+# real code.
+COPY build_check.py /build_check.py
+RUN python /build_check.py
 
-# Same idea for the upscalers: prove spandrel recognises both checkpoints and reports the
-# scale the handler indexes them by, rather than discovering it on the first job.
-RUN python -c "from spandrel import ImageModelDescriptor, ModelLoader; \
-[print(f, '-> scale', ModelLoader().load_from_file('/opt/weights/' + f).scale) \
- for f in ('RealESRGAN_x2plus.pth', 'RealESRGAN_x4plus.pth')]; \
-print('Real-ESRGAN weights load OK')"
+# the handler encodes with /usr/bin/ffmpeg (-c:v libx264 on both the upscale-video and
+# interpolate paths): fail the build, not a billed GPU, if the system binary can't do h264.
+# Plain grep, not `grep -q`: with pipefail on, -q closes its read end the moment it matches
+# and SIGPIPEs ffmpeg mid-write (exit 141) before it finishes listing encoders -- a real
+# failure on this exact check elsewhere in this repo (audio-clean, run ch2g, 2026-10-17).
+# Plain grep drains the whole pipe, so ffmpeg always exits 0, and the matched line doubles
+# as the build-log proof.
+RUN /usr/bin/ffmpeg -hide_banner -encoders 2>/dev/null | grep libx264
 
 CMD ["python", "-u", "/handler.py"]
